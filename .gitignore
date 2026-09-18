@@ -1,0 +1,36 @@
+﻿# Entorno virtual
+.venv/
+venv/
+
+# Perfil local de Chrome / sesión WhatsApp
+chrome_profile/
+
+# Comprobantes procesados
+comprobantes/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos temporales
+*.tmp
+*.crdownload
+
+# OCR / resultados locales
+resultado_ocr.txt
+resultado_pdf.txt
+comprobante_original.jpg
+comprobante_procesado.png
+
+# Variables de entorno
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# Sistema
+Thumbs.db
+.DS_Store
