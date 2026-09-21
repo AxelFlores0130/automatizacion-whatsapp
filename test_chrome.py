@@ -5,6 +5,7 @@ from playwright.sync_api import (
 import re
 import os
 import base64
+import hashlib
 import time
 import shutil
 import pytesseract
@@ -1016,7 +1017,10 @@ def monitorear_chats_whatsapp(page):
     )
 
     mensajes_vistos = set()
+    blobs_imagen_procesados = set()
     estado_chats = {}
+    estado_no_leidos = {}
+    mensajes_conocidos_por_chat = {}
     ids_conocidos_por_chat = {}
 
     def obtener_chats():
@@ -1241,58 +1245,181 @@ def monitorear_chats_whatsapp(page):
                     "[DEBUG] No se intenta cerrar visor porque la "
                     "Page original está cerrada."
                 )
-                return
+                return False
 
             visor = page.locator(
                 '[data-testid="pdf-viewer-iframe"]'
             )
 
-            if visor.count() == 0 or not visor.first.is_visible():
-                return
+            def visor_visible():
+                return (
+                    visor.count() > 0
+                    and visor.first.is_visible()
+                )
 
-            botones = page.locator(
+            if not visor_visible():
+                return True
+
+            dialog_visor = page.locator(
+                '[role="dialog"]:has([data-testid="pdf-viewer-iframe"])'
+            )
+            botones = dialog_visor.locator(
                 'button[aria-label="Cerrar"], '
-                'button[aria-label="Close"]'
+                'button[aria-label="Close"], '
+                '[role="button"][aria-label="Cerrar"], '
+                '[role="button"][aria-label="Close"], '
+                'button[data-testid="close"], '
+                'button[data-testid="close-viewer"], '
+                'button[data-testid="close-modal"]'
             )
 
-            cerrado = False
+            for intento in range(3):
+                for i in range(botones.count()):
+                    boton = botones.nth(i)
 
-            for i in range(botones.count()):
-                boton = botones.nth(i)
+                    if not boton.is_visible():
+                        continue
 
-                if boton.is_visible():
-                    boton.click(timeout=1000)
-                    cerrado = True
+                    try:
+                        boton.click(timeout=1000)
+                    except Exception:
+                        continue
+
                     page.wait_for_timeout(400)
+                    if not visor_visible():
+                        break
+
+                if not visor_visible():
                     break
 
-            if not cerrado:
-                for intento_escape in range(2):
-                    if page.is_closed():
-                        break
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(400)
 
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(400)
+                if not visor_visible():
+                    break
 
-                    if (
-                        visor.count() == 0
-                        or not visor.first.is_visible()
-                    ):
-                        break
-
-            if (
-                not page.is_closed()
-                and (
-                    visor.count() == 0
-                    or not visor.first.is_visible()
-                )
-            ):
+            if not visor_visible():
                 print("[PDF] Visor cerrado correctamente")
-            else:
-                print("[AVISO] Visor PDF continúa abierto")
+                return True
 
+            print("[ERROR] No fue posible cerrar completamente el visor PDF")
+            return False
+        except Exception as error:
+            print("[ERROR] No fue posible cerrar completamente el visor PDF")
+            print("Detalle:", error)
+            return False
+
+    def cerrar_dialogo_reenvio(page):
+        dialogs = page.locator(
+            '[role="dialog"][aria-modal="true"]'
+        )
+
+        for i in range(dialogs.count()):
+            dialog = dialogs.nth(i)
+            if not dialog.is_visible():
+                continue
+
+            if "reenviar mensaje a" not in dialog.inner_text().lower():
+                continue
+
+            botones = dialog.locator(
+                'button[aria-label="Cerrar"], '
+                'button[aria-label="Close"], '
+                '[role="button"][aria-label="Cerrar"], '
+                '[role="button"][aria-label="Close"], '
+                'button[data-testid="close"], '
+                'button[data-testid="close-modal"]'
+            )
+
+            for indice in range(botones.count()):
+                boton = botones.nth(indice)
+                if not boton.is_visible():
+                    continue
+                try:
+                    boton.click(timeout=500)
+                    page.wait_for_timeout(250)
+                    break
+                except Exception:
+                    continue
+
+            if dialog.is_visible():
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(250)
+
+            return not dialog.is_visible()
+
+        return True
+
+    def cerrar_visor_imagen(page):
+        try:
+            if page.is_closed():
+                return False
+
+            selectores_visor = (
+                '[role="dialog"]:has(img[src^="blob:"]), '
+                '[data-testid*="media-viewer"], '
+                '[data-testid*="image-viewer"]'
+            )
+
+            visor = page.locator(selectores_visor)
+
+            def visor_visible():
+                for i in range(visor.count()):
+                    if visor.nth(i).is_visible():
+                        return True
+                return False
+
+            if not visor_visible():
+                return True
+
+            for intento in range(3):
+                botones = visor.locator(
+                    'button[aria-label="Cerrar"], '
+                    'button[aria-label="Close"], '
+                    'button[aria-label*="Cerrar"], '
+                    'button[aria-label*="Close"], '
+                    '[role="button"][aria-label*="Cerrar"], '
+                    '[role="button"][aria-label*="Close"]'
+                )
+
+                for i in range(botones.count()):
+                    boton = botones.nth(i)
+
+                    if not boton.is_visible():
+                        continue
+
+                    try:
+                        boton.click(timeout=1000)
+                    except Exception:
+                        try:
+                            boton.evaluate(
+                                "elemento => elemento.click()"
+                            )
+                        except Exception:
+                            continue
+
+                    page.wait_for_timeout(400)
+                    if not visor_visible():
+                        break
+
+                if not visor_visible():
+                    break
+
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(400)
+
+                if not visor_visible():
+                    break
+
+            if not visor_visible():
+                print("[IMAGEN] Visor cerrado correctamente")
+                return True
+
+            print("[AVISO] Visor de imagen continúa abierto")
+            return False
         except Exception:
-            print("[AVISO] No se pudo cerrar el visor PDF")
+            print("[AVISO] Visor de imagen continúa abierto")
+            return False
 
     def procesar_archivo_detectado(
         page,
@@ -1301,6 +1428,40 @@ def monitorear_chats_whatsapp(page):
         tipo_archivo
     ):
         try:
+            visor_residual = page.locator(
+                '[data-testid="pdf-viewer-iframe"]'
+            )
+
+            if (
+                visor_residual.count() > 0
+                and visor_residual.first.is_visible()
+            ):
+                print(
+                    "[RECUPERACIÓN] Se encontró un visor PDF residual"
+                )
+                if not cerrar_visor_pdf(page):
+                    raise RuntimeError(
+                        "El visor PDF residual sigue abierto."
+                    )
+
+            visor_imagen_residual = page.locator(
+                '[role="dialog"]:has(img[src^="blob:"]), '
+                '[data-testid*="media-viewer"], '
+                '[data-testid*="image-viewer"]'
+            )
+
+            if any(
+                visor_imagen_residual.nth(i).is_visible()
+                for i in range(visor_imagen_residual.count())
+            ):
+                print(
+                    "[RECUPERACIÓN] Se encontró un visor de imagen residual"
+                )
+                if not cerrar_visor_imagen(page):
+                    raise RuntimeError(
+                        "El visor de imagen residual sigue abierto."
+                    )
+
             debug_page(page, "inicio procesamiento")
             mensaje = page.locator(
                 f'[data-testid="{mensaje_id}"]'
@@ -1320,41 +1481,238 @@ def monitorear_chats_whatsapp(page):
                     '[data-testid="image-thumb"]'
                 )
 
-                if imagen_thumb.count() == 0:
-                    raise RuntimeError(
-                        "No se encontró image-thumb en el mensaje."
+                print("[IMAGEN EXACTA]")
+                print("Mensaje:", mensaje_id)
+                print(
+                    "image-thumb dentro del mensaje:",
+                    imagen_thumb.count()
+                )
+                print(
+                    "image-thumb globales:",
+                    page.locator('[data-testid="image-thumb"]').count()
+                )
+                imgs_mensaje = mensaje.locator("img")
+                print("[DEBUG IMAGEN MENSAJE]")
+                print("Mensaje:", mensaje_id)
+                print("image-thumb:", imagen_thumb.count())
+                print("imgs dentro mensaje:", imgs_mensaje.count())
+
+                for indice_img in range(imgs_mensaje.count()):
+                    img_mensaje = imgs_mensaje.nth(indice_img)
+                    datos_img = img_mensaje.evaluate(
+                        """
+                        img => ({
+                            src: img.getAttribute('src'),
+                            naturalWidth: img.naturalWidth,
+                            naturalHeight: img.naturalHeight,
+                            dataTestid: img.getAttribute('data-testid'),
+                            className: img.getAttribute('class')
+                        })
+                        """
                     )
+                    print("IMG", indice_img + 1, datos_img)
+
+                if imagen_thumb.count() != 1:
+                    raise RuntimeError(
+                        "No hay exactamente un image-thumb en el mensaje."
+                    )
+
+                print(
+                    "IMAGE-THUMB ATRIBUTOS:",
+                    imagen_thumb.first.evaluate(
+                        """
+                        elemento => [...elemento.attributes].map(
+                            atributo => ({
+                                nombre: atributo.name,
+                                valor: atributo.value
+                            })
+                        )
+                        """
+                    )
+                )
+
+                blobs_antes = set(
+                    page.locator('img[src^="blob:"]').evaluate_all(
+                        """
+                        elementos => elementos.map(
+                            elemento => elemento.getAttribute('src')
+                        ).filter(Boolean)
+                        """
+                    )
+                )
+                print("[IMAGEN BLOBS ANTES]")
+                print("Mensaje:", mensaje_id)
+                print("Cantidad:", len(blobs_antes))
+                print("URLs:", list(blobs_antes))
 
                 imagen_thumb.click()
                 page.wait_for_timeout(1500)
 
-                blobs = page.locator('img[src^="blob:"]')
+                blobs_globales = page.locator('img[src^="blob:"]')
+                blobs_despues = set(
+                    blobs_globales.evaluate_all(
+                        """
+                        elementos => elementos.map(
+                            elemento => elemento.getAttribute('src')
+                        ).filter(Boolean)
+                        """
+                    )
+                )
+                blobs_nuevos = blobs_despues - blobs_antes
+                print("[IMAGEN BLOBS DESPUÉS]")
+                print("Mensaje:", mensaje_id)
+                print("Cantidad:", len(blobs_despues))
+                print("URLs:", list(blobs_despues))
+                print("[IMAGEN BLOBS NUEVOS]")
+                print("Mensaje:", mensaje_id)
+                print("Cantidad:", len(blobs_nuevos))
+                print("URLs:", list(blobs_nuevos))
+
+                visores = page.locator(
+                    '[role="dialog"], '
+                    '[data-testid*="media-viewer"], '
+                    '[data-testid*="image-viewer"]'
+                )
+                visores_visibles = []
+
+                for i in range(visores.count()):
+                    visor = visores.nth(i)
+                    if visor.is_visible():
+                        visores_visibles.append(visor)
+
+                if visores_visibles:
+                    blobs_visores = visores_visibles[-1].locator(
+                        'img[src^="blob:"]'
+                    )
+                else:
+                    blobs_visores = None
+
+                if blobs_visores is not None:
+                    for indice_blob in range(blobs_visores.count()):
+                        blob_visor = blobs_visores.nth(indice_blob)
+                        datos_blob_visor = blob_visor.evaluate(
+                            """
+                            img => ({
+                                src: img.getAttribute('src'),
+                                naturalWidth: img.naturalWidth,
+                                naturalHeight: img.naturalHeight
+                            })
+                            """
+                        )
+                        print("[BLOB VISOR]")
+                        print("Mensaje:", mensaje_id)
+                        print("src:", datos_blob_visor["src"])
+                        print(
+                            "naturalWidth:",
+                            datos_blob_visor["naturalWidth"]
+                        )
+                        print(
+                            "naturalHeight:",
+                            datos_blob_visor["naturalHeight"]
+                        )
+
+                def candidatos_blob(locator):
+                    resultado = []
+                    if locator is None:
+                        return resultado
+
+                    for indice in range(locator.count()):
+                        imagen = locator.nth(indice)
+                        src = imagen.get_attribute("src")
+                        if not src or src in blobs_imagen_procesados:
+                            continue
+
+                        informacion = imagen.evaluate(
+                            """
+                            img => ({
+                                naturalWidth: img.naturalWidth,
+                                naturalHeight: img.naturalHeight
+                            })
+                            """
+                        )
+                        print("[BLOB CANDIDATO]")
+                        print("src:", src)
+                        print(
+                            "naturalWidth:",
+                            informacion["naturalWidth"]
+                        )
+                        print(
+                            "naturalHeight:",
+                            informacion["naturalHeight"]
+                        )
+                        resultado.append((imagen, src, informacion))
+
+                    return resultado
+
+                candidatos_visores = candidatos_blob(blobs_visores)
+                candidatos_nuevos = [
+                    candidato for candidato in candidatos_visores
+                    if candidato[1] in blobs_nuevos
+                ]
+
                 mejor_imagen = None
-                mejor_area = 0
+                motivo_seleccion = None
 
-                for i in range(blobs.count()):
-                    imagen = blobs.nth(i)
-                    informacion = imagen.evaluate(
-                        """
-                        img => ({
-                            naturalWidth: img.naturalWidth,
-                            naturalHeight: img.naturalHeight
-                        })
-                        """
-                    )
-                    area = (
-                        informacion["naturalWidth"]
-                        * informacion["naturalHeight"]
-                    )
+                if len(candidatos_nuevos) == 1:
+                    mejor_imagen = candidatos_nuevos[0]
+                    motivo_seleccion = "visor"
+                elif len(candidatos_visores) == 1:
+                    mejor_imagen = candidatos_visores[0]
+                    motivo_seleccion = "visor"
+                else:
+                    candidatos_globales = candidatos_blob(blobs_globales)
+                    candidatos_globales_nuevos = [
+                        candidato for candidato in candidatos_globales
+                        if candidato[1] in blobs_nuevos
+                    ]
 
-                    if area > mejor_area:
-                        mejor_area = area
-                        mejor_imagen = imagen
+                    if len(candidatos_globales_nuevos) == 1:
+                        mejor_imagen = candidatos_globales_nuevos[0]
+                        motivo_seleccion = "blob_nuevo"
+                    elif len(candidatos_globales_nuevos) > 1:
+                        mejor_imagen = max(
+                            candidatos_globales_nuevos,
+                            key=lambda candidato: (
+                                candidato[2]["naturalWidth"]
+                                * candidato[2]["naturalHeight"]
+                            )
+                        )
+                        motivo_seleccion = "fallback"
+                    else:
+                        candidatos_globales_disponibles = [
+                            candidato for candidato in candidatos_globales
+                            if candidato[1] not in blobs_antes
+                        ]
+                        if len(candidatos_globales_disponibles) == 1:
+                            mejor_imagen = (
+                                candidatos_globales_disponibles[0]
+                            )
+                            motivo_seleccion = "fallback"
 
                 if mejor_imagen is None:
-                    raise RuntimeError(
-                        "No se encontró un BLOB de imagen válido."
+                    print("[IMAGEN NO PROCESADA]")
+                    print("Mensaje:", mensaje_id)
+                    print(
+                        "Motivo: no se pudo asociar un blob único al "
+                        "mensaje"
                     )
+                    return
+
+                mejor_imagen, src_seleccionado, informacion_seleccionada = (
+                    mejor_imagen
+                )
+                print("[BLOB SELECCIONADO]")
+                print("Mensaje:", mensaje_id)
+                print("src:", src_seleccionado)
+                print("Motivo:", motivo_seleccion)
+                print(
+                    "naturalWidth:",
+                    informacion_seleccionada["naturalWidth"]
+                )
+                print(
+                    "naturalHeight:",
+                    informacion_seleccionada["naturalHeight"]
+                )
 
                 base64_imagen = mejor_imagen.evaluate(
                     """
@@ -1373,12 +1731,40 @@ def monitorear_chats_whatsapp(page):
                     """
                 )
                 datos_imagen = base64.b64decode(base64_imagen)
+                blobs_imagen_procesados.add(src_seleccionado)
+                print("[IMAGEN SELECCIONADA]")
+                print("Mensaje:", mensaje_id)
+                print("src:", src_seleccionado)
+                print(
+                    "SHA256:",
+                    hashlib.sha256(datos_imagen).hexdigest()
+                )
+                print(
+                    "naturalWidth:",
+                    informacion_seleccionada["naturalWidth"]
+                )
+                print(
+                    "naturalHeight:",
+                    informacion_seleccionada["naturalHeight"]
+                )
+                mensaje_id_seguro = re.sub(
+                    r'[<>:"/\\|?*]',
+                    "_",
+                    mensaje_id
+                )
                 ruta_original = os.path.join(
                     COMPROBANTES_PATH,
                     "comprobante_original.jpg"
                 )
+                ruta_debug_original = os.path.join(
+                    COMPROBANTES_PATH,
+                    f"debug_{mensaje_id_seguro}_original.jpg"
+                )
 
                 with open(ruta_original, "wb") as archivo:
+                    archivo.write(datos_imagen)
+
+                with open(ruta_debug_original, "wb") as archivo:
                     archivo.write(datos_imagen)
 
                 imagen = Image.open(ruta_original)
@@ -1405,6 +1791,12 @@ def monitorear_chats_whatsapp(page):
                         Image.Resampling.LANCZOS
                     )
 
+                ruta_debug_procesado = os.path.join(
+                    COMPROBANTES_PATH,
+                    f"debug_{mensaje_id_seguro}_procesado.png"
+                )
+                procesada.save(ruta_debug_procesado)
+
                 texto_procesado = pytesseract.image_to_string(
                     procesada,
                     lang="spa+eng",
@@ -1415,15 +1807,32 @@ def monitorear_chats_whatsapp(page):
                     lang="spa+eng",
                     config="--psm 11"
                 )
+                print("====================================")
+                print("[OCR IMAGEN CANDIDATA]")
+                print("Mensaje:", mensaje_id)
+                print("====================================")
+                print("--- PSM6 ---")
+                print(texto_procesado)
+                print("--- PSM11 ---")
+                print(texto_alternativo)
+                print("====================================")
                 texto_clasificacion = (
                     texto_original + "\n"
                     + texto_procesado + "\n"
                     + texto_alternativo
                 )
 
-                if not parece_comprobante_transferencia(
+                parece_transferencia = parece_comprobante_transferencia(
                     texto_clasificacion
-                ):
+                )
+                print("[CLASIFICACIÓN]")
+                print("Mensaje:", mensaje_id)
+                print(
+                    "Parece transferencia:",
+                    parece_transferencia
+                )
+
+                if not parece_transferencia:
                     print("====================================")
                     print("ARCHIVO IGNORADO")
                     print("====================================")
@@ -1475,7 +1884,7 @@ def monitorear_chats_whatsapp(page):
                 if nombre_pdf_match:
                     nombre_pdf = nombre_pdf_match.group(1).strip()
                 else:
-                    nombre_pdf = f"comprobante_{mensaje_id}.pdf"
+                    nombre_pdf = f"documento_{mensaje_id}.pdf"
 
                 nombre_pdf = re.sub(
                     r'[<>:"/\\|?*]',
@@ -1516,6 +1925,27 @@ def monitorear_chats_whatsapp(page):
                     raise RuntimeError(
                         "No se encontró el Frame real del visor PDF."
                     )
+
+                blobs_capturados = []
+
+                for intento in range(6):
+                    blobs_capturados = frame_real.evaluate(
+                        """
+                        () => (window.__capturedPdfBlobs || [])
+                            .filter(blob => blob.base64)
+                            .map(blob => ({
+                                url: blob.url,
+                                type: blob.type,
+                                size: blob.size,
+                                base64: blob.base64
+                            }))
+                        """
+                    )
+
+                    if blobs_capturados:
+                        break
+
+                    page.wait_for_timeout(250)
 
                 print("[DEBUG FRAME]", type(frame_real), "URL:", frame_real.url)
                 print("[PDF FRAME]")
@@ -1576,91 +2006,209 @@ def monitorear_chats_whatsapp(page):
                         ):
                             valores_relevantes.append(valor)
 
+                blobs_pdf = []
+
                 recursos = frame_real.evaluate(
                     """
                     () => performance.getEntriesByType('resource')
                         .map(entry => entry.name)
-                        .filter(name => {
-                            const value = name.toLowerCase();
-                            return value.includes('pdf')
-                                || value.includes('blob:')
-                                || value.includes('whatsapp')
-                                || value.includes('media')
-                                || value.includes('document');
-                        })
-                        .slice(0, 30)
+                        .filter(name => name.startsWith('blob:'))
                     """
                 )
 
-                print("[PDF FRAME RESOURCES]")
-                for i, recurso in enumerate(recursos, start=1):
-                    print(f"{i}. {recurso}")
+                for recurso in recursos:
+                    if recurso not in valores_relevantes:
+                        valores_relevantes.append(recurso)
 
                 blob_urls = [
                     valor for valor in valores_relevantes
                     if valor.startswith("blob:")
                 ]
 
-                if not blob_urls:
-                    blob_urls = [
-                        recurso for recurso in recursos
-                        if recurso.startswith("blob:")
-                    ]
-
                 for blob_url in blob_urls:
-                    print("[PDF BLOB ENCONTRADO]")
-                    print(blob_url)
+                    if blob_url not in blobs_pdf:
+                        blobs_pdf.append(blob_url)
+                        print("[PDF BLOB ENCONTRADO]")
+                        print(blob_url)
 
                 datos_pdf = None
+                paginas_png = []
 
-                for blob_url in blob_urls:
+                for blob in blobs_capturados:
+                    print("[PDF BLOB CAPTURADO EN CREACIÓN]")
+                    print("URL:", blob["url"])
+                    print("Type:", blob["type"])
+                    print("Tamaño:", blob["size"])
+
                     try:
-                        base64_pdf = frame_real.evaluate(
-                            """
-                            async blobUrl => {
-                                const response = await fetch(blobUrl);
-                                const buffer = await response.arrayBuffer();
-                                const bytes = new Uint8Array(buffer);
-                                const chunk = 0x8000;
-                                let binary = '';
-                                for (let i = 0; i < bytes.length; i += chunk) {
-                                    binary += String.fromCharCode(
-                                        ...bytes.subarray(i, i + chunk)
-                                    );
-                                }
-                                return btoa(binary);
-                            }
-                            """,
-                            blob_url
-                        )
-                        candidato_pdf = base64.b64decode(base64_pdf)
-
-                        if candidato_pdf.startswith(b"%PDF"):
-                            datos_pdf = candidato_pdf
-                            break
+                        datos = base64.b64decode(blob["base64"])
                     except Exception:
                         continue
 
+                    print("Cabecera:", repr(datos[:12]))
+
+                    if datos.startswith(b"%PDF"):
+                        datos_pdf = datos
+                        print("[PDF REAL CAPTURADO]")
+                        print("Tamaño:", len(datos_pdf))
+                        print("Cabecera:", repr(datos_pdf[:12]))
+                        break
+
+                    if datos.startswith(b"\x89PNG\r\n\x1a\n"):
+                        paginas_png.append(datos)
+
                 if datos_pdf is None:
-                    cerrar_visor_pdf(page)
+                    if paginas_png:
+                        texto_psm6_paginas = []
+                        texto_psm11_paginas = []
+
+                        for numero_pagina, datos_png in enumerate(
+                            paginas_png,
+                            start=1
+                        ):
+                            ruta_pagina = os.path.join(
+                                COMPROBANTES_PATH,
+                                f"debug_pdf_pagina_{numero_pagina}.png"
+                            )
+
+                            os.makedirs(
+                                COMPROBANTES_PATH,
+                                exist_ok=True
+                            )
+
+                            with open(ruta_pagina, "wb") as archivo_png:
+                                archivo_png.write(datos_png)
+
+                            print("[PDF PÁGINA RENDERIZADA]")
+                            print("Página:", numero_pagina)
+                            print("Tamaño:", len(datos_png))
+
+                            imagen_pagina = Image.open(ruta_pagina)
+                            if imagen_pagina.mode != "RGB":
+                                imagen_pagina = imagen_pagina.convert(
+                                    "RGB"
+                                )
+
+                            procesada = ImageEnhance.Contrast(
+                                imagen_pagina.convert("L")
+                            ).enhance(2.0)
+                            procesada = procesada.filter(
+                                ImageFilter.SHARPEN
+                            )
+
+                            if procesada.width < 1500:
+                                procesada = procesada.resize(
+                                    (
+                                        procesada.width * 2,
+                                        procesada.height * 2
+                                    ),
+                                    Image.Resampling.LANCZOS
+                                )
+
+                            texto_psm6_paginas.append(
+                                pytesseract.image_to_string(
+                                    procesada,
+                                    lang="spa+eng",
+                                    config="--psm 6"
+                                )
+                            )
+                            texto_psm11_paginas.append(
+                                pytesseract.image_to_string(
+                                    procesada,
+                                    lang="spa+eng",
+                                    config="--psm 11"
+                                )
+                            )
+
+                        texto_psm6 = "\n".join(texto_psm6_paginas)
+                        texto_psm11 = "\n".join(texto_psm11_paginas)
+
+                        print("====================================")
+                        print("OCR PDF DESDE PÁGINAS DEL VISOR")
+                        print("====================================")
+                        print("--- PSM6 ---")
+                        print(texto_psm6)
+                        print("--- PSM11 ---")
+                        print(texto_psm11)
+                        print("====================================")
+
+                        texto_clasificacion = (
+                            texto_psm6 + "\n" + texto_psm11
+                        )
+
+                        if not parece_comprobante_transferencia(
+                            texto_clasificacion
+                        ):
+                            print("====================================")
+                            print("ARCHIVO IGNORADO")
+                            print("====================================")
+                            print("Chat:", nombre_chat)
+                            print("Tipo:", tipo_archivo)
+                            print("Mensaje:", mensaje_id)
+                            print(
+                                "Motivo: no parece comprobante de "
+                                "transferencia"
+                            )
+                            print("====================================")
+                            return
+
+                        datos_extraidos = extraer_datos_transferencia(
+                            texto_psm6,
+                            texto_psm11
+                        )
+                        mostrar_datos_comprobante(
+                            nombre_chat,
+                            tipo_archivo,
+                            mensaje_id,
+                            datos_extraidos
+                        )
+                        return
+
+                    if not blobs_capturados:
+                        print("[DIAGNÓSTICO CREATEOBJECTURL]")
+                        print("El hook no capturó blobs.")
+                    else:
+                        print("[DIAGNÓSTICO CREATEOBJECTURL]")
+                        print(
+                            "Se capturaron blobs, pero ninguno contiene "
+                            "cabecera %PDF."
+                        )
                     return
 
-                ruta_final = os.path.join(
+                ruta_pdf = os.path.join(
                     COMPROBANTES_PATH,
                     nombre_pdf
                 )
 
-                with open(ruta_final, "wb") as archivo_pdf:
+                os.makedirs(COMPROBANTES_PATH, exist_ok=True)
+
+                with open(ruta_pdf, "wb") as archivo_pdf:
                     archivo_pdf.write(datos_pdf)
 
-                print("[PDF EXTRAÍDO DESDE VISOR]")
-                print("Nombre:", nombre_pdf)
-                print("Tamaño:", len(datos_pdf))
-                print("Cabecera:", datos_pdf[:8])
-                cerrar_visor_pdf(page)
-                debug_page(page, "después cerrar visor")
+                pdf_guardado = (
+                    os.path.exists(ruta_pdf)
+                    and os.path.getsize(ruta_pdf) > 0
+                )
+                with open(ruta_pdf, "rb") as archivo_pdf:
+                    cabecera_pdf = archivo_pdf.read(12)
 
-                documento = pymupdf.open(ruta_final)
+                if not pdf_guardado or not cabecera_pdf.startswith(b"%PDF"):
+                    raise RuntimeError(
+                        "El PDF guardado no pasó la validación de integridad."
+                    )
+
+                print("====================================")
+                print("PDF EXTRAÍDO DESDE VISOR")
+                print("====================================")
+                print("Chat:", nombre_chat)
+                print("Mensaje:", mensaje_id)
+                print("Nombre:", nombre_pdf)
+                print("Ruta:", ruta_pdf)
+                print("Tamaño:", os.path.getsize(ruta_pdf), "bytes")
+                print("Cabecera:", repr(cabecera_pdf))
+                print("====================================")
+
+                documento = pymupdf.open(ruta_pdf)
                 textos_paginas = []
                 textos_psm6 = []
                 textos_psm11 = []
@@ -1779,12 +2327,29 @@ def monitorear_chats_whatsapp(page):
             print("Error:", error)
             cerrar_visor_pdf(page)
             debug_page(page, "después cerrar visor")
+        finally:
+            if tipo_archivo == "PDF":
+                cerrado = cerrar_visor_pdf(page)
+                if not cerrado:
+                    print(
+                        "[ERROR] El procesamiento PDF terminó con el "
+                        "visor abierto."
+                    )
+            elif tipo_archivo == "IMAGEN":
+                cerrado = cerrar_visor_imagen(page)
+                if not cerrado:
+                    print(
+                        "[ERROR] El procesamiento de imagen terminó con "
+                        "el visor abierto."
+                    )
 
     def revisar_chat(
         nombre,
         firma_actual,
         preview_actual=None,
-        encabezado_archivo="NUEVO ARCHIVO DETECTADO"
+        encabezado_archivo="NUEVO ARCHIVO DETECTADO",
+        nuevos_por_unread=0,
+        revision_inicial=False
     ):
         page.wait_for_selector(
             '[data-testid="conversation-panel-messages"]',
@@ -1927,14 +2492,6 @@ def monitorear_chats_whatsapp(page):
                 ).get_attribute("data-testid")
 
 
-        tipo_esperado = tipo_esperado_de_firma(
-            firma_actual,
-            preview_actual
-        )
-
-        if tipo_esperado is None:
-            return
-
         hora_firma = extraer_hora(firma_actual)
 
         mensajes = page.locator(
@@ -1950,8 +2507,16 @@ def monitorear_chats_whatsapp(page):
             cantidad_mensajes
         )
 
-        candidatos = []
-        inicio = max(0, cantidad_mensajes - 10)
+        if nuevos_por_unread > 0 or revision_inicial:
+            diagnosticar_separador_no_leidos(page)
+
+        tipo_esperado = tipo_esperado_de_firma(
+            firma_actual,
+            preview_actual
+        )
+
+        mensajes_actuales = []
+        inicio = max(0, cantidad_mensajes - 30)
 
         for i in range(inicio, cantidad_mensajes):
             mensaje = mensajes.nth(i)
@@ -1988,57 +2553,215 @@ def monitorear_chats_whatsapp(page):
             else:
                 tipo_mensaje = "OTRO"
 
-            if (
-                hora_firma
-                and hora_mensaje
-                and hora_mensaje.split()[0] == hora_firma.split()[0]
-                and tipo_mensaje == tipo_esperado
-            ):
-                candidatos.append(
-                    (mensaje, mensaje.get_attribute("data-testid"))
+            direccion = direccion_mensaje(mensaje)
+            mensaje_id = mensaje.get_attribute("data-testid")
+
+            diagnosticar_tipo_mensaje(mensaje, mensaje_id, direccion)
+
+            if mensaje_id:
+                mensajes_actuales.append(
+                    (
+                        mensaje_id,
+                        mensaje,
+                        tipo_mensaje,
+                        direccion,
+                        hora_mensaje
+                    )
                 )
 
-        if not candidatos:
-            print(
-                "[AVISO] Actividad de archivo detectada en",
-                nombre,
-                "pero no se encontró un mensaje reciente coincidente."
+        ids_actuales = [registro[0] for registro in mensajes_actuales]
+        conocidos = mensajes_conocidos_por_chat.get(nombre)
+
+        if conocidos is None:
+            print("[BASELINE AUSENTE CON ACTIVIDAD]")
+            print("Chat:", nombre)
+            print("Unread nuevos:", nuevos_por_unread)
+
+            if nuevos_por_unread <= 0:
+                mensajes_conocidos_por_chat[nombre] = ids_actuales[-50:]
+                print(
+                    "[FRONTERA CHAT] Chat:", nombre,
+                    "| baseline inicial:", len(ids_actuales)
+                )
+                return
+
+            margen_seguridad_primer_evento = 2
+            unread_orientacion = max(1, nuevos_por_unread)
+            cantidad_candidatos = min(
+                len(mensajes_actuales),
+                unread_orientacion + margen_seguridad_primer_evento
             )
+            if revision_inicial:
+                entrantes = [
+                    registro for registro in mensajes_actuales
+                    if registro[3] == "entrante"
+                ]
+                nuevos_registros = entrantes[-nuevos_por_unread:]
+            else:
+                nuevos_registros = mensajes_actuales[-cantidad_candidatos:]
+
+            print("[PRIMER EVENTO SIN FRONTERA]")
+            print("Chat:", nombre)
+            print("Unread nuevos:", nuevos_por_unread)
+            print("Mensajes renderizados:", len(mensajes_actuales))
+            print("Candidatos recientes:", len(nuevos_registros))
+
+            print("[LOTE NUEVO REAL]")
+            print("Chat:", nombre)
+            print("Mensajes:", len(nuevos_registros))
+
+            candidatos = nuevos_registros
+
+            for posicion, (
+                id_mensaje,
+                mensaje,
+                tipo_mensaje,
+                direccion,
+                hora_mensaje
+            ) in enumerate(candidatos, start=1):
+                print("[MENSAJE NUEVO]")
+                print(f"Posición: {posicion}/{len(candidatos)}")
+                print("ID:", id_mensaje)
+                print("Dirección:", direccion)
+                print("Tipo:", tipo_mensaje)
+
+                if not id_mensaje or id_mensaje in mensajes_vistos:
+                    continue
+
+                if direccion == "saliente":
+                    continue
+
+                if tipo_mensaje not in ("IMAGEN", "PDF"):
+                    mensajes_vistos.add(id_mensaje)
+                    continue
+
+                mensajes_vistos.add(id_mensaje)
+                procesar_archivo_detectado(
+                    page,
+                    nombre,
+                    id_mensaje,
+                    tipo_mensaje
+                )
+
+            ultimo_id_observado = ids_actuales[-1] if ids_actuales else None
+            mensajes_conocidos_por_chat[nombre] = ids_actuales[-50:]
+            print("[FRONTERA CREADA]")
+            print("Chat:", nombre)
+            print("Último conocido:", ultimo_id_observado or "ninguno")
             return
 
-        mensaje, id_mensaje = candidatos[-1]
+        indice_ultimo_conocido = None
+        ultimo_conocido = None
 
-        if not id_mensaje or id_mensaje in mensajes_vistos:
-            return
+        for indice in range(len(ids_actuales) - 1, -1, -1):
+            if ids_actuales[indice] in conocidos:
+                indice_ultimo_conocido = indice
+                ultimo_conocido = ids_actuales[indice]
+                break
 
-        mensajes_vistos.add(id_mensaje)
+        if indice_ultimo_conocido is None:
+            print(
+                "[FRONTERA CHAT] Chat:", nombre,
+                "| no se encontró un ID conocido visible; "
+                "se usa cola adaptativa"
+            )
+            margen_seguridad_frontera = 2
+            unread_orientacion = max(1, nuevos_por_unread)
+            cantidad_candidatos = min(
+                len(mensajes_actuales),
+                unread_orientacion + margen_seguridad_frontera
+            )
+            nuevos_registros = mensajes_actuales[-cantidad_candidatos:]
+        else:
+            nuevos_registros = mensajes_actuales[
+                indice_ultimo_conocido + 1:
+            ]
 
-        print()
-        print("====================================")
-        print(encabezado_archivo)
-        print("====================================")
+        print("[FRONTERA CHAT]")
         print("Chat:", nombre)
-        print("Tipo:", tipo_esperado)
-        print("Mensaje:", id_mensaje)
-        print("Hora:", hora_firma)
-        print("====================================")
-
+        print("Mensajes actuales:", len(ids_actuales))
         print(
-            f"[DEBUG PAGE] antes procesamiento | "
-            f"closed={page.is_closed()}"
+            "Último conocido encontrado:",
+            ultimo_conocido or "ninguno"
         )
+        print("Nuevos después de frontera:", len(nuevos_registros))
 
-        procesar_archivo_detectado(
-            page,
-            nombre,
+        if nuevos_por_unread <= 0 and not nuevos_registros:
+            candidatos_firma = [
+                registro for registro in mensajes_actuales
+                if (
+                    registro[2] in ("IMAGEN", "PDF")
+                    and registro[3] == "entrante"
+                    and hora_firma
+                    and registro[4]
+                    and registro[4].split()[0] == hora_firma.split()[0]
+                    and registro[2] == tipo_esperado
+                )
+            ]
+            nuevos_registros = candidatos_firma[-1:]
+
+        print("[LOTE NUEVO REAL]")
+        print("Chat:", nombre)
+        print("Mensajes:", len(nuevos_registros))
+
+        candidatos = nuevos_registros
+
+        total_lote = len(candidatos)
+
+        for posicion, (
             id_mensaje,
-            tipo_esperado
-        )
+            mensaje,
+            tipo_mensaje,
+            direccion,
+            hora_mensaje
+        ) in enumerate(candidatos, start=1):
+            print("[MENSAJE DEL LOTE]")
+            print(f"Posición: {posicion}/{total_lote}")
+            print("ID:", id_mensaje)
+            print("Dirección:", direccion)
+            print("Tipo:", tipo_mensaje)
 
-        print(
-            f"[DEBUG PAGE] después procesamiento | "
-            f"closed={page.is_closed()}"
-        )
+            if not id_mensaje or id_mensaje in mensajes_vistos:
+                continue
+
+            if direccion == "saliente":
+                continue
+
+            if tipo_mensaje == "OTRO":
+                continue
+
+            mensajes_vistos.add(id_mensaje)
+
+            print()
+            print("====================================")
+            print(encabezado_archivo)
+            print("====================================")
+            print("Chat:", nombre)
+            print("Tipo:", tipo_mensaje)
+            print("Mensaje:", id_mensaje)
+            print("Hora:", hora_firma)
+            if nuevos_por_unread > 0:
+                print("[ARCHIVO NUEVO DEL LOTE]")
+            print("====================================")
+
+            print(
+                f"[DEBUG PAGE] antes procesamiento | "
+                f"closed={page.is_closed()}"
+            )
+
+            procesar_archivo_detectado(
+                page,
+                nombre,
+                id_mensaje,
+                tipo_mensaje
+            )
+
+            print(
+                f"[DEBUG PAGE] después procesamiento | "
+                f"closed={page.is_closed()}"
+            )
+
+        mensajes_conocidos_por_chat[nombre] = ids_actuales[-50:]
 
         return
 
@@ -2163,8 +2886,24 @@ def monitorear_chats_whatsapp(page):
                 )
 
             nombre = obtener_nombre_chat(fila)
+            texto_sin_unread = fila.evaluate(
+                """
+                fila => {
+                    const clon = fila.cloneNode(true);
+                    const badge = clon.querySelector(
+                        '[data-testid="icon-unread-count"]'
+                    );
+
+                    if (badge) {
+                        badge.remove();
+                    }
+
+                    return clon.innerText || '';
+                }
+                """
+            )
             texto_completo = normalizar_firma_chat(
-                fila.inner_text(timeout=700)
+                texto_sin_unread
             )
 
             return {
@@ -2196,6 +2935,492 @@ def monitorear_chats_whatsapp(page):
             nombre + " " + hora + " " + preview
         )
 
+    def firma_fila_valida(snapshot, firma):
+        valor = normalizar_firma_chat(firma or "")
+        nombre = normalizar_firma_chat(snapshot.get("nombre") or "")
+
+        if not valor or valor == nombre:
+            return False
+
+        resto = valor
+        if nombre and valor.startswith(nombre):
+            resto = valor[len(nombre):].strip()
+
+        if not resto or re.fullmatch(r"[.·…\-]+", resto):
+            return False
+
+        return True
+
+    def contador_no_leidos(snapshot):
+        valor = normalizar_firma_chat(
+            snapshot.get("no_leidos") or ""
+        )
+
+        coincidencia = re.search(r"\d+", valor)
+        if not coincidencia:
+            return 0
+
+        try:
+            return int(coincidencia.group(0))
+        except ValueError:
+            return 0
+
+    def diagnosticar_fila_ana(fila, snapshot):
+        print("====================================")
+        print("[DEBUG FILA ANA]")
+        print("====================================")
+        print("Nombre:", snapshot["nombre"])
+        print("INNER_TEXT:")
+        print(fila.inner_text())
+
+        badge = fila.locator(
+            '[data-testid="icon-unread-count"]'
+        )
+        print("Cantidad icon-unread-count:", badge.count())
+
+        if badge.count() > 0:
+            badge = badge.first
+            print(
+                "INNER_TEXT DEL BADGE:",
+                badge.inner_text()
+            )
+            print(
+                "TEXT_CONTENT DEL BADGE:",
+                badge.text_content() or ""
+            )
+            print(
+                "ARIA-LABEL DEL BADGE:",
+                badge.get_attribute("aria-label") or ""
+            )
+            print(
+                "TITLE DEL BADGE:",
+                badge.get_attribute("title") or ""
+            )
+            print("HTML DEL BADGE:", badge.evaluate(
+                "elemento => elemento.outerHTML"
+            ))
+            print("HTML DEL PADRE DEL BADGE:", badge.evaluate(
+                "elemento => elemento.parentElement.outerHTML"
+            ))
+
+        data_testids = fila.locator(
+            "[data-testid]"
+        ).evaluate_all(
+            """
+            elementos => [...new Set(elementos.map(
+                elemento => elemento.getAttribute('data-testid')
+            ).filter(Boolean))]
+            """
+        )
+        print("DATA-TESTIDS FILA ANA:")
+        for data_testid in data_testids:
+            print(data_testid)
+
+        firma_actual = firma_monitor(snapshot)
+        unread_actual = contador_no_leidos(snapshot)
+        print(
+            "FIRMA GUARDADA:",
+            estado_chats.get("ana")
+        )
+        print("FIRMA ACTUAL:", firma_actual)
+        print(
+            "UNREAD GUARDADO:",
+            estado_no_leidos.get("ana")
+        )
+        print("UNREAD CALCULADO:", unread_actual)
+        print("====================================")
+
+    def diagnosticar_direccion_mensajes(page):
+        mensajes = page.locator(
+            '[data-testid^="conv-msg-"]'
+        )
+        cantidad = mensajes.count()
+        inicio = max(0, cantidad - 8)
+
+        for i in range(inicio, cantidad):
+            mensaje = mensajes.nth(i)
+            informacion = mensaje.evaluate(
+                """
+                elemento => {
+                    const obtenerAtributos = nodo => ({
+                        tagName: nodo.tagName,
+                        className: nodo.getAttribute('class'),
+                        dataTestid: nodo.getAttribute('data-testid'),
+                        ariaLabel: nodo.getAttribute('aria-label'),
+                        role: nodo.getAttribute('role'),
+                        dir: nodo.getAttribute('dir')
+                    });
+
+                    const atributosPropios = obtenerAtributos(elemento);
+                    const ancestros = [];
+                    let actual = elemento.parentElement;
+
+                    for (let nivel = 1; actual && nivel <= 6; nivel++) {
+                        ancestros.push(obtenerAtributos(actual));
+                        actual = actual.parentElement;
+                    }
+
+                    const descendientes = [
+                        ...elemento.querySelectorAll('[data-testid]')
+                    ];
+                    const dataTestids = [
+                        ...new Set(descendientes.map(nodo => (
+                            nodo.getAttribute('data-testid')
+                        )))
+                    ];
+                    const ariaLabels = [
+                        ...new Set(descendientes.map(nodo => (
+                            nodo.getAttribute('aria-label')
+                        )).filter(Boolean))
+                    ];
+
+                    return {
+                        propios: atributosPropios,
+                        prePlain: elemento.getAttribute(
+                            'data-pre-plain-text'
+                        ),
+                        dataAtributos: [...elemento.attributes]
+                            .map(atributo => atributo.name)
+                            .filter(nombre => nombre.startsWith('data-')),
+                        ancestros,
+                        dataTestids,
+                        ariaLabels,
+                        texto: (elemento.innerText || '')
+                            .replace(/\\s+/g, ' ')
+                            .trim()
+                            .slice(0, 150)
+                    };
+                }
+                """
+            )
+
+            propios = informacion["propios"]
+            print("====================================")
+            print("[DEBUG DIRECCIÓN MENSAJE]")
+            print("====================================")
+            print(
+                "ID:",
+                mensaje.get_attribute("data-testid")
+            )
+            print("CLASS:", propios["className"] or "")
+            print("ARIA:", propios["ariaLabel"] or "")
+            print("ROLE:", propios["role"] or "")
+            print(
+                "DATA-PRE-PLAIN-TEXT:",
+                informacion["prePlain"] or ""
+            )
+            print(
+                "DATA-* PROPIOS:",
+                ", ".join(informacion["dataAtributos"])
+            )
+            print("TEXTO:", informacion["texto"])
+
+            for nivel, ancestro in enumerate(
+                informacion["ancestros"],
+                start=1
+            ):
+                print(
+                    f"ANCESTRO {nivel}:",
+                    "tag=", ancestro["tagName"],
+                    "class=", ancestro["className"] or "",
+                    "data-testid=", ancestro["dataTestid"] or "",
+                    "aria=", ancestro["ariaLabel"] or "",
+                    "role=", ancestro["role"] or "",
+                    "dir=", ancestro["dir"] or ""
+                )
+
+            print(
+                "DATA-TESTIDS DESCENDIENTES:",
+                ", ".join(
+                    valor for valor in informacion["dataTestids"]
+                    if valor
+                )
+            )
+            print(
+                "ARIA DESCENDIENTES:",
+                ", ".join(informacion["ariaLabels"])
+            )
+            print("====================================")
+
+    def direccion_mensaje(mensaje):
+        try:
+            if mensaje.locator(
+                '[data-testid="tail-in"]'
+            ).count() > 0:
+                return "entrante"
+
+            if mensaje.locator(
+                '[data-testid="tail-out"]'
+            ).count() > 0:
+                return "saliente"
+
+            return "desconocida"
+        except Exception:
+            return "desconocida"
+
+    def diagnosticar_tipo_mensaje(mensaje, mensaje_id, direccion):
+        data_testids = mensaje.locator(
+            "[data-testid]"
+        ).evaluate_all(
+            """
+            elementos => [...new Set(elementos.map(
+                elemento => elemento.getAttribute('data-testid')
+            ).filter(Boolean))]
+            """
+        )
+        print("[DEBUG TIPO MENSAJE]")
+        print("ID:", mensaje_id)
+        print("Dirección:", direccion)
+        print("inner_text:", mensaje.inner_text())
+        print(
+            "image-thumb:",
+            mensaje.locator('[data-testid="image-thumb"]').count()
+        )
+        print("img:", mensaje.locator("img").count())
+        print(
+            "blob-img:",
+            mensaje.locator('img[src^="blob:"]').count()
+        )
+        print(
+            "document-thumb:",
+            mensaje.locator('[data-testid="document-thumb"]').count()
+        )
+        print(
+            "pdf-icon:",
+            mensaje.locator('[data-testid="document-PDF-icon"]').count()
+        )
+        print("data-testids:", data_testids)
+
+    def diagnosticar_separador_no_leidos(page):
+        panel = page.locator(
+            '[data-testid="conversation-panel-messages"]'
+        )
+
+        if panel.count() == 0:
+            print("[SEPARADOR NO LEÍDOS] Panel no encontrado")
+            return
+
+        separadores = panel.evaluate(
+            """
+            panel => {
+                const patron = /\\b\\d+\\s+mensajes?\\s+no\\s+le[ií]dos?\\b/i;
+                const mensajes = [...panel.querySelectorAll(
+                    '[data-testid^="conv-msg-"]'
+                )];
+                const elementos = [...panel.querySelectorAll('*')]
+                    .filter(elemento => {
+                        const texto = (elemento.innerText || '').trim();
+                        return patron.test(texto) && ![...elemento.children]
+                            .some(hijo => patron.test(
+                                (hijo.innerText || '').trim()
+                            ));
+                    });
+
+                return elementos.map(elemento => {
+                    const antes = mensajes.filter(mensaje => (
+                        elemento.compareDocumentPosition(mensaje)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                    )).map(mensaje => (
+                        mensaje.getAttribute('data-testid')
+                    ));
+                    const despues = mensajes.filter(mensaje => (
+                        elemento.compareDocumentPosition(mensaje)
+                        & Node.DOCUMENT_POSITION_PRECEDING
+                    )).map(mensaje => (
+                        mensaje.getAttribute('data-testid')
+                    ));
+
+                    return {
+                        texto: (elemento.innerText || '').trim(),
+                        tag: elemento.tagName,
+                        dataTestid: elemento.getAttribute('data-testid'),
+                        antes,
+                        despues
+                    };
+                });
+            }
+            """
+        )
+
+        print("[SEPARADOR NO LEÍDOS]")
+        print("Encontrados:", len(separadores))
+        for separador in separadores:
+            print("Texto:", separador["texto"])
+            print("Tag:", separador["tag"])
+            print("Data-testid:", separador["dataTestid"] or "")
+            print("Conv-msg antes:", separador["antes"])
+            print("Conv-msg después:", separador["despues"])
+
+    def diagnosticar_direccion_desconocida(page, mensaje):
+        def atributos_elemento(elemento):
+            return elemento.evaluate(
+                """
+                nodo => ({
+                    tagName: nodo.tagName,
+                    className: nodo.getAttribute('class'),
+                    dataTestid: nodo.getAttribute('data-testid'),
+                    ariaLabel: nodo.getAttribute('aria-label'),
+                    role: nodo.getAttribute('role'),
+                    dir: nodo.getAttribute('dir'),
+                    style: nodo.getAttribute('style'),
+                    dataAttrs: [...nodo.attributes]
+                        .filter(atributo => atributo.name.startsWith('data-'))
+                        .map(atributo => `${atributo.name}=${atributo.value}`)
+                })
+                """
+            )
+
+        print("====================================")
+        print("[DEBUG DIRECCIÓN DESCONOCIDA]")
+        print("====================================")
+        print("ID:", mensaje.get_attribute("data-testid"))
+
+        propio = atributos_elemento(mensaje)
+        print("CLASS:", propio["className"] or "")
+        print("DATA-TESTID:", propio["dataTestid"] or "")
+        print("ARIA:", propio["ariaLabel"] or "")
+        print("ROLE:", propio["role"] or "")
+        print("DIR:", propio["dir"] or "")
+        print("STYLE:", propio["style"] or "")
+        print(
+            "DATA-PRE-PLAIN-TEXT:",
+            mensaje.get_attribute("data-pre-plain-text") or ""
+        )
+
+        msg_container = mensaje.locator(
+            '[data-testid="msg-container"]'
+        )
+
+        if msg_container.count() > 0:
+            contenedor = msg_container.first
+            contenedor_info = atributos_elemento(contenedor)
+            print("[MSG-CONTAINER]")
+            print("CLASS:", contenedor_info["className"] or "")
+            print("ARIA:", contenedor_info["ariaLabel"] or "")
+            print("ROLE:", contenedor_info["role"] or "")
+            print("DIR:", contenedor_info["dir"] or "")
+            print("STYLE:", contenedor_info["style"] or "")
+            print(
+                "DATA-*:",
+                ", ".join(contenedor_info["dataAttrs"])
+            )
+        else:
+            contenedor = mensaje
+            print("[MSG-CONTAINER] no encontrado")
+
+        for origen_nombre, origen in (
+            ("CONV-MSG", mensaje),
+            ("MSG-CONTAINER", contenedor)
+        ):
+            ancestros = origen.locator("xpath=ancestor::*[position() <= 5]")
+            print(f"[{origen_nombre} ANCESTROS]")
+
+            for i in range(ancestros.count()):
+                ancestro = atributos_elemento(ancestros.nth(i))
+                print(
+                    f"ANCESTRO {i + 1}:",
+                    "tag=", ancestro["tagName"],
+                    "class=", ancestro["className"] or "",
+                    "data-testid=", ancestro["dataTestid"] or "",
+                    "aria=", ancestro["ariaLabel"] or "",
+                    "role=", ancestro["role"] or "",
+                    "dir=", ancestro["dir"] or "",
+                    "style=", ancestro["style"] or ""
+                )
+
+        print(
+            "DATA-TESTIDS DESCENDIENTES:",
+            ", ".join(
+                dict.fromkeys(
+                    mensaje.locator("[data-testid]").evaluate_all(
+                        """
+                        elementos => elementos.map(
+                            elemento => elemento.getAttribute('data-testid')
+                        ).filter(Boolean)
+                        """
+                    )
+                )
+            )
+        )
+        print(
+            "ARIA DESCENDIENTES:",
+            ", ".join(
+                dict.fromkeys(
+                    mensaje.locator("[aria-label]").evaluate_all(
+                        """
+                        elementos => elementos.map(
+                            elemento => elemento.getAttribute('aria-label')
+                        ).filter(Boolean)
+                        """
+                    )
+                )
+            )
+        )
+
+        print("BOUNDING BOX CONV-MSG:", mensaje.bounding_box())
+        print(
+            "BOUNDING BOX MSG-CONTAINER:",
+            contenedor.bounding_box()
+        )
+
+        mensajes = page.locator(
+            '[data-testid^="conv-msg-"]'
+        )
+        indice_desconocido = None
+
+        for i in range(mensajes.count()):
+            if mensajes.nth(i).get_attribute("data-testid") == (
+                mensaje.get_attribute("data-testid")
+            ):
+                indice_desconocido = i
+                break
+
+        for direccion_referencia in ("entrante", "saliente"):
+            referencia = None
+
+            if indice_desconocido is not None:
+                indices = sorted(
+                    range(mensajes.count()),
+                    key=lambda indice: abs(indice - indice_desconocido)
+                )
+            else:
+                indices = range(mensajes.count())
+
+            for indice in indices:
+                candidata = mensajes.nth(indice)
+                if direccion_mensaje(candidata) == direccion_referencia:
+                    referencia = candidata
+                    break
+
+            if referencia is None:
+                print(
+                    "[REFERENCIA]",
+                    direccion_referencia,
+                    "no encontrada"
+                )
+                continue
+
+            referencia_contenedor = referencia.locator(
+                '[data-testid="msg-container"]'
+            )
+            if referencia_contenedor.count() == 0:
+                referencia_contenedor = referencia
+
+            print("[REFERENCIA]", direccion_referencia)
+            print("ID:", referencia.get_attribute("data-testid"))
+            print(
+                "TAIL:",
+                direccion_referencia,
+                "class=",
+                referencia_contenedor.first.get_attribute("class") or ""
+            )
+            print(
+                "BOUNDING BOX:",
+                referencia_contenedor.first.bounding_box()
+            )
+
+        print("====================================")
+
     def mostrar_lista(valores):
         if not valores:
             return ""
@@ -2223,8 +3448,6 @@ def monitorear_chats_whatsapp(page):
             orden_anterior.append(nombre)
         except Exception:
             continue
-
-    print("Preparando revisión inicial de chats no leídos...")
 
     def localizar_fila_por_nombre(nombre_buscado):
         filas_actuales = page.locator(
@@ -2285,11 +3508,17 @@ def monitorear_chats_whatsapp(page):
                     or "1"
                 )
 
+            coincidencia_contador = re.search(r"\d+", contador)
+            unread_count = int(
+                coincidencia_contador.group(0)
+            ) if coincidencia_contador else 1
+
             snapshot = obtener_snapshot(fila)
             no_leidos.append(
                 {
                     "nombre": nombre_chat,
                     "contador": contador,
+                    "unread_count": unread_count,
                     "firma": snapshot["texto_completo"],
                     "preview": snapshot["preview"]
                 }
@@ -2300,6 +3529,8 @@ def monitorear_chats_whatsapp(page):
         print("====================================")
         print("Chats visibles:", filas_iniciales.count())
         print("Chats con mensajes no leídos:", len(no_leidos))
+
+        archivos_procesados = 0
 
         for chat_no_leido in no_leidos:
             print(
@@ -2337,7 +3568,23 @@ def monitorear_chats_whatsapp(page):
             )
 
             print("[ABRIENDO CHAT]", nombre)
-            fila.click()
+            if not cerrar_dialogo_reenvio(page):
+                print(
+                    "[AVISO] Dialog modal abierto; se omite el chat:",
+                    nombre
+                )
+                continue
+
+            try:
+                fila.click(timeout=1500)
+            except Exception as error:
+                print(
+                    "[AVISO] No se pudo abrir rápidamente el chat:",
+                    nombre,
+                    "|",
+                    error
+                )
+                continue
 
             if not confirmar_chat_abierto(nombre):
                 print(
@@ -2348,24 +3595,22 @@ def monitorear_chats_whatsapp(page):
 
             print("[CHAT ABIERTO]", nombre)
 
-            if tipo_esperado_de_firma(
-                chat_no_leido["firma"],
-                chat_no_leido["preview"]
-            ) is None:
-                print(
-                    "[AVISO] Chat",
-                    nombre,
-                    "tiene mensajes no leídos, pero no se pudo asociar "
-                    "con seguridad un archivo nuevo."
-                )
-                continue
-
+            vistos_antes = len(mensajes_vistos)
             revisar_chat(
                 nombre,
                 chat_no_leido["firma"],
                 chat_no_leido["preview"],
-                "ARCHIVO PENDIENTE DETECTADO"
+                "NUEVO ARCHIVO DETECTADO",
+                nuevos_por_unread=chat_no_leido["unread_count"],
+                revision_inicial=True
             )
+            archivos_procesados += len(mensajes_vistos) - vistos_antes
+
+        print("====================================")
+        print("REVISIÓN INICIAL COMPLETADA")
+        print("Chats pendientes revisados:", len(no_leidos))
+        print("Archivos procesados:", archivos_procesados)
+        print("====================================")
 
     def diagnosticar_titulos_no_leidos():
         filas = page.locator(
@@ -2462,6 +3707,7 @@ def monitorear_chats_whatsapp(page):
 
     def monitor_whatsapp():
         estado_chats.clear()
+        estado_no_leidos.clear()
         filas_actuales = page.locator(
             '[data-testid="cell-frame-container"]'
         )
@@ -2470,6 +3716,12 @@ def monitorear_chats_whatsapp(page):
             fila = filas_actuales.nth(i)
             snapshot = obtener_snapshot(fila)
             estado_chats[snapshot["nombre"]] = firma_monitor(snapshot)
+            estado_no_leidos[snapshot["nombre"]] = contador_no_leidos(
+                snapshot
+            )
+
+        print("Chats visibles:", filas_actuales.count())
+        print("Estado inicial preparado.")
 
         print("====================================")
         print("REVISIÓN INICIAL COMPLETADA")
@@ -2500,40 +3752,92 @@ def monitorear_chats_whatsapp(page):
                         continue
 
                     nombre = snapshot["nombre"]
+                    unread_actual = contador_no_leidos(snapshot)
+                    firma_actual = firma_monitor(snapshot)
+                    unread_anterior = estado_no_leidos.get(nombre, 0)
 
                     if nombre not in estado_chats:
-                        estado_chats[nombre] = firma_monitor(snapshot)
+                        if firma_fila_valida(snapshot, firma_actual):
+                            estado_chats[nombre] = firma_actual
+                        estado_no_leidos[nombre] = unread_actual
                         continue
 
                     snapshot_anterior = estado_chats[nombre]
-                    firma_actual = firma_monitor(snapshot)
+                    unread_aumento = unread_actual > unread_anterior
 
-                    if firma_actual == snapshot_anterior:
+                    if (
+                        not unread_aumento
+                        and not firma_fila_valida(snapshot, firma_actual)
+                    ):
+                        continue
+
+                    if unread_actual != unread_anterior:
+                        print(
+                            "[UNREAD] Chat:", nombre,
+                            "| anterior:", unread_anterior,
+                            "| actual:", unread_actual
+                        )
+
+                    firma_cambio = firma_actual != snapshot_anterior
+
+                    if not unread_aumento and not firma_cambio:
                         continue
 
                     estado_chats[nombre] = firma_actual
+                    estado_no_leidos[nombre] = unread_actual
                     tipo_esperado = tipo_esperado_de_firma(
                         firma_actual,
                         snapshot["preview"]
                     )
 
-                    if tipo_esperado is None:
+                    if not unread_aumento and tipo_esperado is None:
                         continue
 
-                    print("[CAMBIO DETECTADO] Chat:", nombre)
-                    print(
-                        "Antes:",
-                        snapshot_anterior
-                    )
-                    print("Ahora:", firma_actual)
+                    if unread_aumento:
+                        nuevos_por_unread = (
+                            unread_actual - unread_anterior
+                        )
+                        print(
+                            "[ACTIVIDAD POR NO LEÍDOS] Chat:",
+                            nombre,
+                            "| nuevos:",
+                            nuevos_por_unread
+                        )
+                    else:
+                        nuevos_por_unread = 0
+                        print("[CAMBIO DETECTADO] Chat:", nombre)
+                        print(
+                            "Antes:",
+                            snapshot_anterior
+                        )
+                        print("Ahora:", firma_actual)
 
-                    fila.click()
+                    if not cerrar_dialogo_reenvio(page):
+                        print(
+                            "[AVISO] Dialog de reenvío sigue abierto; "
+                            "se omite el click de la fila.",
+                            nombre
+                        )
+                        continue
+
+                    try:
+                        fila.click(timeout=1500)
+                    except Exception as error:
+                        print(
+                            "[AVISO] No se pudo abrir rápidamente el chat:",
+                            nombre,
+                            "|",
+                            error
+                        )
+                        continue
                     page.wait_for_timeout(500)
                     revisar_chat(
                         nombre,
                         snapshot["texto_completo"],
-                        snapshot["preview"]
+                        snapshot["preview"],
+                        nuevos_por_unread=nuevos_por_unread
                     )
+                    estado_no_leidos[nombre] = 0
 
                 print(
                     "[MONITOR] activo | chats visibles:",
@@ -2564,6 +3868,65 @@ def monitorear_chats_whatsapp(page):
 
                 print("[ERROR] Monitor:", error)
                 time.sleep(1)
+
+    def preparar_baselines_iniciales():
+        nombres_visibles = []
+        filas = page.locator(
+            '[data-testid="cell-frame-container"]'
+        )
+
+        for i in range(filas.count()):
+            nombre = obtener_nombre_chat(filas.nth(i))
+            if (
+                nombre
+                and nombre.lower() != "archivados"
+                and nombre not in nombres_visibles
+            ):
+                nombres_visibles.append(nombre)
+
+        for nombre in nombres_visibles:
+            fila = localizar_fila_por_nombre(nombre)
+            if fila is None:
+                continue
+
+            try:
+                fila.click()
+                if not confirmar_chat_abierto(nombre):
+                    continue
+
+                mensajes = page.locator(
+                    '[data-testid^="conv-msg-"]'
+                )
+                ids_actuales = []
+                inicio = max(0, mensajes.count() - 50)
+
+                for i in range(inicio, mensajes.count()):
+                    mensaje_id = mensajes.nth(i).get_attribute(
+                        "data-testid"
+                    )
+                    if mensaje_id:
+                        ids_actuales.append(mensaje_id)
+
+                mensajes_conocidos_por_chat[nombre] = ids_actuales
+                print(
+                    "[BASELINE INICIAL] Chat:", nombre,
+                    "| mensajes conocidos:", len(ids_actuales)
+                )
+            except Exception as error:
+                print(
+                    "[AVISO] No se pudo preparar baseline para",
+                    nombre,
+                    ":",
+                    error
+                )
+
+        print("====================================")
+        print("BASELINES PREPARADOS")
+        print(
+            "Chats con baseline:",
+            len(mensajes_conocidos_por_chat)
+        )
+        print("====================================")
 
     revisar_no_leidos_iniciales()
     monitor_whatsapp()
@@ -2787,6 +4150,64 @@ with sync_playwright() as p:
             "width": 1400,
             "height": 900
         }
+    )
+
+    context.add_init_script(
+        """
+        (() => {
+            if (window.__pdfBlobHookInstalled) {
+                return;
+            }
+
+            window.__pdfBlobHookInstalled = true;
+            window.__capturedPdfBlobs = [];
+
+            if (
+                !window.URL
+                || typeof window.URL.createObjectURL !== "function"
+            ) {
+                return;
+            }
+
+            const originalCreateObjectURL = (
+                URL.createObjectURL.bind(URL)
+            );
+
+            URL.createObjectURL = function (obj) {
+                const url = originalCreateObjectURL(obj);
+                const esVisorPdf = location.href.includes(
+                    "webtp.whatsapp.net/pdf-viewer/"
+                );
+
+                if (esVisorPdf && obj instanceof Blob) {
+                    const entrada = {
+                        url,
+                        type: obj.type || "",
+                        size: obj.size,
+                        base64: null
+                    };
+
+                    window.__capturedPdfBlobs.push(entrada);
+
+                    obj.arrayBuffer().then(buffer => {
+                        const bytes = new Uint8Array(buffer);
+                        const chunkSize = 0x8000;
+                        let binary = "";
+
+                        for (let i = 0; i < bytes.length; i += chunkSize) {
+                            binary += String.fromCharCode(
+                                ...bytes.subarray(i, i + chunkSize)
+                            );
+                        }
+
+                        entrada.base64 = btoa(binary);
+                    }).catch(() => {});
+                }
+
+                return url;
+            };
+        })();
+        """
     )
 
     if context.pages:
