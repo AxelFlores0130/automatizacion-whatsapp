@@ -8,9 +8,14 @@ import base64
 import hashlib
 import time
 import shutil
+from datetime import datetime
 import pytesseract
 import pymupdf
+import requests
+from dotenv import load_dotenv
 from PIL import Image, ImageEnhance, ImageFilter
+
+load_dotenv()
 
 
 # ============================================================
@@ -1167,6 +1172,121 @@ def monitorear_chats_whatsapp(page):
 
         return cantidad_senales >= 3 and senales_fuertes >= 1
 
+    def convertir_fecha_mysql(valor):
+        if valor is None:
+            return None
+
+        texto = str(valor).strip()
+        if not texto:
+            return None
+
+        meses = {
+            "jan": "01", "ene": "01", "january": "01",
+            "feb": "02", "febr": "02", "february": "02",
+            "mar": "03", "march": "03",
+            "apr": "04", "april": "04",
+            "may": "05", "mayo": "05",
+            "jun": "06", "june": "06",
+            "jul": "07", "july": "07",
+            "aug": "08", "ago": "08", "august": "08",
+            "sep": "09", "sept": "09", "september": "09",
+            "oct": "10", "october": "10",
+            "nov": "11", "november": "11",
+            "dec": "12", "dic": "12", "december": "12",
+        }
+
+        formatos = (
+            "%d %b %Y",
+            "%d/%b/%Y",
+            "%d %B %Y",
+            "%d/%B/%Y",
+            "%d/%m/%Y",
+            "%Y-%m-%d",
+            "%d-%m-%Y",
+            "%d %m %Y",
+        )
+
+        for formato in formatos:
+            try:
+                return datetime.strptime(texto, formato).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        patron = r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$"
+        coincidencia = re.match(patron, texto)
+        if coincidencia:
+            dia, mes_texto, anio = coincidencia.groups()
+            mes = meses.get(mes_texto.lower())
+            if mes is not None:
+                try:
+                    return datetime(int(anio), int(mes), int(dia)).strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+
+        return None
+
+    def convertir_hora_mysql(valor):
+        if valor is None:
+            return None
+
+        texto = str(valor).strip()
+        if not texto:
+            return None
+
+        formatos = (
+            "%H:%M:%S",
+            "%H:%M",
+            "%I:%M:%S %p",
+            "%I:%M %p",
+        )
+
+        for formato in formatos:
+            try:
+                return datetime.strptime(texto, formato).strftime("%H:%M:%S")
+            except ValueError:
+                pass
+
+        return None
+
+    def enviar_transferencia_backend(nombre_chat, tipo_archivo, mensaje_id, datos_extraidos):
+        api_url = os.getenv("API_URL", "http://127.0.0.1:5000")
+
+        payload = {
+            "mensaje_whatsapp_id": mensaje_id,
+            "chat": nombre_chat,
+            "tipo_archivo": tipo_archivo,
+            "monto": datos_extraidos.get("monto"),
+            "destinatario": datos_extraidos.get("destinatario"),
+            "cuenta_destino": datos_extraidos.get("cuenta_destino"),
+            "cuenta_origen": datos_extraidos.get("cuenta_origen"),
+            "comision": datos_extraidos.get("comision"),
+            "concepto": datos_extraidos.get("concepto"),
+            "tipo_operacion": datos_extraidos.get("tipo_operacion"),
+            "folio": datos_extraidos.get("folio"),
+            "fecha_transferencia": convertir_fecha_mysql(datos_extraidos.get("fecha")),
+            "hora_transferencia": convertir_hora_mysql(datos_extraidos.get("hora")),
+        }
+
+        try:
+            respuesta = requests.post(
+                f"{api_url}/api/transferencias",
+                json=payload,
+                timeout=5,
+            )
+
+            if respuesta.status_code == 201:
+                print("[API OK] Transferencia guardada correctamente")
+            elif respuesta.status_code == 409:
+                print("[API DUPLICADO] La transferencia ya estaba registrada")
+            else:
+                print("[API ERROR] No se pudo enviar la transferencia al backend")
+                try:
+                    print(respuesta.json())
+                except ValueError:
+                    print(respuesta.text)
+        except requests.exceptions.RequestException:
+            print("[API ERROR] No se pudo enviar la transferencia al backend")
+
     def mostrar_datos_comprobante(
         nombre_chat,
         tipo_archivo,
@@ -1191,6 +1311,13 @@ def monitorear_chats_whatsapp(page):
         print("Fecha:", datos_extraidos["fecha"])
         print("Hora:", datos_extraidos["hora"])
         print("====================================")
+
+        enviar_transferencia_backend(
+            nombre_chat,
+            tipo_archivo,
+            mensaje_id,
+            datos_extraidos,
+        )
 
     def debug_page(page, etapa):
         try:
