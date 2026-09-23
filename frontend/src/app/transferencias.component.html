@@ -1,0 +1,130 @@
+<div class="app-shell">
+  <header class="topbar">
+    <a class="brand" routerLink="/transferencias" aria-label="Dorian Muebles">
+      <img src="/dorian-logo.png" alt="Dorian Muebles" />
+    </a>
+    <nav class="main-nav" aria-label="Navegación principal">
+      <a class="nav-item active" routerLink="/transferencias" aria-current="page">Transferencias</a>
+      <button type="button" class="nav-item nav-button">Clientes</button>
+      <button type="button" class="nav-item nav-button">Pagos</button>
+    </nav>
+    <div class="session-mark" aria-label="Indicador de sesión"></div>
+  </header>
+
+  <main class="page-content">
+    <section class="blue-band" aria-labelledby="page-title">
+      <div class="band-main">
+        <h1 id="page-title">Transferencias</h1>
+        <strong>{{ resumen().total }} transferencias</strong>
+      </div>
+      <div class="band-metrics" aria-label="Resumen por estado">
+        <div><span>Pendientes</span><strong>{{ resumen().pendientes }}</strong></div>
+        <div><span>En revisión</span><strong>{{ resumen().enRevision }}</strong></div>
+        <div><span>Validadas</span><strong>{{ resumen().validadas }}</strong></div>
+        <div><span>Registradas</span><strong>{{ resumen().registradas }}</strong></div>
+      </div>
+      <div class="status-tabs" role="tablist" aria-label="Filtrar por estado">
+        @for (estado of estados; track estado) {
+          <button
+            type="button"
+            role="tab"
+            [attr.aria-selected]="estadoSeleccionado() === estado"
+            [class.active]="estadoSeleccionado() === estado"
+            (click)="seleccionarEstado(estado)"
+          >
+            {{ estado === 'TODOS' ? 'Todas' : formatearEstado(estado) }}
+            <span>{{ estado === 'TODOS' ? resumen().total : contarEstadoVisible(estado) }}</span>
+          </button>
+        }
+      </div>
+    </section>
+
+    <section class="records-section" aria-label="Listado de transferencias">
+      <div class="filters" aria-label="Filtros de transferencias">
+        <label class="search-field">
+          <span>Buscar remitente, folio o monto</span>
+          <input
+            type="search"
+            placeholder="Buscar remitente, folio o monto"
+            [value]="busqueda()"
+            (input)="actualizarBusqueda($event)"
+          />
+        </label>
+        <label>
+          <span>Tipo de archivo</span>
+          <select [value]="tipoSeleccionado()" (change)="actualizarTipo($event)">
+            @for (tipo of tipos; track tipo) {
+              <option [value]="tipo">{{ tipo === 'TODOS' ? 'Imagen y PDF' : tipo }}</option>
+            }
+          </select>
+        </label>
+        <button type="button" class="clear-button" (click)="limpiarFiltros()">Limpiar</button>
+      </div>
+
+      @if (cargando()) {
+        <div class="state-panel" role="status">Cargando transferencias...</div>
+      } @else if (error()) {
+        <div class="state-panel state-error" role="alert">No fue posible conectar con el servicio de transferencias.</div>
+      } @else if (transferencias().length === 0) {
+        <div class="state-panel">Aún no hay transferencias registradas.</div>
+      } @else if (transferenciasFiltradas().length === 0) {
+        <div class="state-panel">No hay resultados para los filtros seleccionados.</div>
+      } @else {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Remitente</th>
+                <th scope="col">Monto</th>
+                <th scope="col">Fecha</th>
+                <th scope="col">Destinatario</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (transferencia of transferenciasFiltradas(); track transferencia.id_transferencia) {
+                <tr>
+                  <td>
+                    <div class="sender-cell">
+                      <span class="avatar">{{ iniciales(transferencia.chat) }}</span>
+                      <span>
+                        <strong>{{ transferencia.chat || '—' }}</strong>
+                        <small>{{ transferencia.tipo_archivo || 'Archivo' }} · #{{ transferencia.id_transferencia }}</small>
+                      </span>
+                    </div>
+                  </td>
+                  <td class="amount-cell">
+                    {{ transferencia.monto === null ? '—' : (transferencia.monto | currency: 'MXN' : 'symbol-narrow' : '1.2-2') }}
+                  </td>
+                  <td>
+                    @if (transferencia.fecha_transferencia) {
+                      <strong>{{ transferencia.fecha_transferencia | date: 'dd/MM/yyyy' }}</strong>
+                      @if (transferencia.hora_transferencia) {
+                        <small class="sub-value">{{ transferencia.hora_transferencia }}</small>
+                      }
+                    } @else {
+                      <span class="muted">No detectada</span>
+                    }
+                  </td>
+                  <td>
+                    <span>{{ transferencia.destinatario || '—' }}</span>
+                    @if (transferencia.folio) {
+                      <small class="sub-value">Folio {{ transferencia.folio }}</small>
+                    }
+                  </td>
+                  <td>
+                    <span class="status-badge" [class]="estadoClase(transferencia.estado)">
+                      <i aria-hidden="true"></i>{{ formatearEstado(transferencia.estado) }}
+                    </span>
+                  </td>
+                  <td><a class="review-button" [routerLink]="['/transferencias', transferencia.id_transferencia]">Revisar</a></td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </section>
+  </main>
+</div>

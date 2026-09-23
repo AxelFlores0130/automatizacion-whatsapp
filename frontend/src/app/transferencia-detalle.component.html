@@ -1,0 +1,157 @@
+<div class="detail-shell">
+  <header class="topbar">
+    <a class="brand" routerLink="/transferencias" aria-label="Dorian Muebles">
+      <img src="/dorian-logo.png" alt="Dorian Muebles" />
+    </a>
+    <nav class="main-nav" aria-label="Navegación principal">
+      <a class="nav-item active" routerLink="/transferencias" aria-current="page">Transferencias</a>
+      <button type="button" class="nav-item nav-button">Clientes</button>
+      <button type="button" class="nav-item nav-button">Pagos</button>
+    </nav>
+    <div class="session-mark" aria-label="Indicador de sesión"></div>
+  </header>
+
+  <main class="detail-page">
+    @if (cargando()) {
+      <div class="detail-state" role="status">Cargando transferencia...</div>
+    } @else if (error() || !transferencia()) {
+      <div class="detail-state detail-error" role="alert">
+        No fue posible encontrar esta transferencia.
+        <a routerLink="/transferencias">Volver a transferencias</a>
+      </div>
+    } @else {
+      <div class="detail-topline">
+        <div class="detail-identity">
+          <a routerLink="/transferencias" class="back-link">← Transferencias</a>
+          <span class="detail-separator">|</span>
+          <strong>{{ transferencia()!.chat || 'Chat sin nombre' }} · #{{ transferencia()!.id_transferencia }}</strong>
+          <span class="status-badge" [class]="estadoClase(transferencia()!.estado)">
+            <i aria-hidden="true"></i>{{ formatearEstado(transferencia()!.estado) }}
+          </span>
+        </div>
+        <div class="detail-navigation">
+          @if (anteriorId) {
+            <a [routerLink]="['/transferencias', anteriorId]">Anterior</a>
+          }
+          @if (siguienteId) {
+            <a [routerLink]="['/transferencias', siguienteId]">Siguiente</a>
+          }
+        </div>
+      </div>
+
+      <section class="detail-grid">
+        <article class="original-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Comprobante original</h2>
+              <p>{{ transferencia()!.tipo_archivo || 'Archivo' }}</p>
+            </div>
+            @if (transferencia()!.archivo_comprobante) {
+              <a class="open-link" [href]="comprobanteUrl" target="_blank" rel="noopener">Abrir</a>
+            }
+          </div>
+          <div class="original-viewer">
+            @if (!transferencia()!.archivo_comprobante) {
+              <div class="empty-proof">
+                <strong>Comprobante original no disponible</strong>
+                <span>Este registro no tiene un archivo asociado.</span>
+              </div>
+            } @else if (esPdf(transferencia()!)) {
+              <iframe [src]="comprobanteResourceUrl" title="Comprobante PDF original"></iframe>
+            } @else {
+              <img [src]="comprobanteUrl" alt="Comprobante original de la transferencia" />
+            }
+          </div>
+        </article>
+
+        <article class="data-panel">
+          <div class="amount-strip">
+            <div>
+              <span>Monto</span>
+              <strong>{{ transferencia()!.monto === null ? '—' : (transferencia()!.monto | currency: 'MXN' : 'symbol-narrow' : '1.2-2') }}</strong>
+            </div>
+            <span class="status-badge" [class]="estadoClase(transferencia()!.estado)">
+              <i aria-hidden="true"></i>{{ formatearEstado(transferencia()!.estado) }}
+            </span>
+          </div>
+          <div class="transfer-date">
+            <strong>{{ transferencia()!.fecha_transferencia ? (transferencia()!.fecha_transferencia | date: 'dd/MM/yyyy') : 'No detectada' }}</strong>
+            @if (transferencia()!.hora_transferencia) {
+              <span>{{ transferencia()!.hora_transferencia }}</span>
+            }
+          </div>
+
+          <section class="data-section">
+            <h2>Datos extraídos</h2>
+            <dl class="data-list">
+              <div><dt>Destinatario</dt><dd>{{ valor(transferencia()!.destinatario) }}</dd></div>
+              <div><dt>Cuenta destino</dt><dd>{{ valor(transferencia()!.cuenta_destino) }}</dd></div>
+              <div><dt>Cuenta origen</dt><dd>{{ valor(transferencia()!.cuenta_origen) }}</dd></div>
+              <div><dt>Comisión</dt><dd>{{ transferencia()!.comision === null ? '—' : (transferencia()!.comision | currency: 'MXN' : 'symbol-narrow' : '1.2-2') }}</dd></div>
+              <div><dt>Concepto</dt><dd>{{ valor(transferencia()!.concepto) }}</dd></div>
+              <div><dt>Operación</dt><dd>{{ valor(transferencia()!.tipo_operacion) }}</dd></div>
+              <div><dt>Folio</dt><dd>{{ valor(transferencia()!.folio) }}</dd></div>
+              <div><dt>Fecha y hora</dt><dd>{{ transferencia()!.fecha_transferencia ? (transferencia()!.fecha_transferencia | date: 'dd/MM/yyyy') : 'No detectada' }}{{ transferencia()!.hora_transferencia ? ' · ' + transferencia()!.hora_transferencia : '' }}</dd></div>
+            </dl>
+          </section>
+
+          <section class="data-section source-section">
+            <h2>Origen</h2>
+            <dl class="data-list">
+              <div><dt>Chat</dt><dd>{{ valor(transferencia()!.chat) }}</dd></div>
+              <div><dt>Archivo</dt><dd>{{ valor(transferencia()!.tipo_archivo) }}</dd></div>
+            </dl>
+          </section>
+
+          <p class="future-note">Cliente y pago relacionados · próximamente</p>
+          <div class="detail-actions">
+            @if (transferencia()!.estado === 'RECHAZADA') {
+              <button
+                type="button"
+                class="restore-action"
+                [disabled]="accionEnCurso() !== null"
+                (click)="restaurar()"
+              >
+                {{ accionEnCurso() === 'restaurar' ? 'Restaurando...' : 'Restaurar' }}
+              </button>
+              <button
+                type="button"
+                class="delete-action"
+                [disabled]="accionEnCurso() !== null"
+                (click)="eliminarDefinitivamente()"
+              >
+                {{ accionEnCurso() === 'eliminar' ? 'Eliminando...' : 'Eliminar definitivamente' }}
+              </button>
+            } @else {
+              <button
+                type="button"
+                class="reject-action"
+                [disabled]="accionEnCurso() !== null || transferencia()!.estado !== 'PENDIENTE'"
+                (click)="rechazar()"
+              >
+                {{ accionEnCurso() === 'rechazar' ? 'Rechazando...' : 'Rechazar' }}
+              </button>
+              <button type="button" class="primary-action" disabled title="Disponible al integrar validación">
+                Validar transferencia
+              </button>
+            }
+          </div>
+        </article>
+      </section>
+    }
+  </main>
+
+  @if (modalAbierto()) {
+    <app-confirm-modal
+      [title]="modalConfig().title"
+      [message]="modalConfig().message"
+      [secondaryText]="modalConfig().secondaryText"
+      [confirmText]="modalConfig().confirmText"
+      [variant]="modalConfig().variant"
+      [loading]="accionEnCurso() !== null"
+      [errorMessage]="errorAccion()"
+      (confirm)="confirmarModal()"
+      (cancel)="cancelarModal()"
+    />
+  }
+</div>

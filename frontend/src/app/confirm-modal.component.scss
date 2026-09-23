@@ -1,0 +1,123 @@
+:host {
+  display: contents;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(7, 21, 61, .4);
+  animation: modal-fade-in 180ms ease-out;
+}
+
+.confirm-modal {
+  width: min(430px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid #E1E4E8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(7, 21, 61, .18);
+  animation: modal-scale-in 180ms ease-out;
+}
+
+.modal-indicator {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 16px;
+  border-radius: 50%;
+  background: #E5EBFF;
+}
+
+.modal-indicator span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #1F73F1;
+}
+
+.modal-indicator.danger { background: #FBE8E8; }
+.modal-indicator.danger span { background: #C93636; }
+
+h2 {
+  margin: 0;
+  color: #07153D;
+  font: 700 1.05rem/1.3 "Segoe UI", Arial, sans-serif;
+}
+
+.modal-message {
+  margin: 12px 0 0;
+  color: #07153D;
+  font-size: .88rem;
+  line-height: 1.45;
+}
+
+.modal-secondary {
+  margin: 7px 0 0;
+  color: #8A94A8;
+  font-size: .78rem;
+  line-height: 1.45;
+}
+
+.modal-error {
+  margin: 12px 0 0;
+  color: #C93636;
+  font-size: .77rem;
+  line-height: 1.4;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 24px;
+}
+
+.modal-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 4px;
+  font: 700 .77rem "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+
+.modal-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
+
+.cancel-button {
+  border: 1px solid #E1E4E8;
+  color: #07153D;
+  background: #fff;
+}
+
+.confirm-button {
+  border: 1px solid #1F73F1;
+  color: #fff;
+  background: #1F73F1;
+}
+
+.confirm-button.danger {
+  border-color: #C93636;
+  background: #C93636;
+}
+
+button:focus-visible {
+  outline: 3px solid rgba(31, 115, 241, .25);
+  outline-offset: 2px;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-scale-in {
+  from { opacity: 0; transform: scale(.98); }
+  to { opacity: 1; transform: scale(1); }
+}

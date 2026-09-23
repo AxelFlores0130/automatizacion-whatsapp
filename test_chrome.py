@@ -39,6 +39,10 @@ COMPROBANTES_PATH = (
 DOWNLOAD_PATH = r"C:\Users\DORIAN\Downloads"
 
 os.makedirs(COMPROBANTES_PATH, exist_ok=True)
+os.makedirs(
+    os.path.join(COMPROBANTES_PATH, "originales"),
+    exist_ok=True
+)
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
@@ -811,6 +815,185 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
             hora.group(1) + ":" + hora.group(2)
         )
 
+    # Fallbacks conservadores sobre el OCR ya obtenido.
+    lineas_fallback = lineas6 + lineas11
+    etiquetas_fin = re.compile(
+        r'^(?:dato\s+no\s+verificado|cuenta|banco|concepto|'
+        r'motivo|referencia|folio|fecha|hora|comisi[oó]n|'
+        r'tipo(?:\s+de)?\s+operaci[oó]n|clabe)\b',
+        re.IGNORECASE
+    )
+
+    def siguiente_valor(etiquetas, cantidad=3):
+        for indice, linea in enumerate(lineas_fallback):
+            coincidencia = re.search(etiquetas, linea, re.IGNORECASE)
+            if not coincidencia:
+                continue
+
+            contenido = linea[coincidencia.end():].strip(" :.-")
+            candidatos = [contenido] if contenido else []
+            candidatos.extend(
+                lineas_fallback[indice + 1:indice + 1 + cantidad]
+            )
+
+            for candidato in candidatos:
+                candidato = candidato.strip()
+                if candidato and not etiquetas_fin.match(candidato):
+                    return candidato
+
+        return None
+
+    if datos["destinatario"] is None:
+        for indice, linea in enumerate(lineas_fallback):
+            if not re.search(r'cuenta\s+destino|tarjeta\s+destino|'
+                             r'clabe\s+destino', linea, re.IGNORECASE):
+                continue
+
+            for candidato in lineas_fallback[indice + 1:indice + 6]:
+                if etiquetas_fin.match(candidato):
+                    break
+
+                nombre = re.sub(
+                    r'^nombre\s*:?\s*',
+                    '',
+                    candidato,
+                    flags=re.IGNORECASE
+                ).strip(" :.-")
+                if nombre and nombre != candidato:
+                    datos["destinatario"] = nombre
+                    break
+
+                if candidato.lower() == "nombre":
+                    continue
+
+                if re.search(r'[A-Za-zÁÉÍÓÚáéíóúÑñ]', candidato):
+                    datos["destinatario"] = candidato
+                    break
+
+            if datos["destinatario"] is not None:
+                break
+
+    if datos["tipo_operacion"] is None:
+        tipo = siguiente_valor(
+            r'tipo\s+de\s+transferencia\b',
+            cantidad=3
+        )
+        if tipo is None:
+            coincidencia = re.search(
+                r'tipo\s+de\s+(spei|transferencia(?:\s+interbancaria)?|'
+                r'transferencia\s+a\s+terceros)\b',
+                "\n".join(lineas_fallback),
+                re.IGNORECASE
+            )
+            if coincidencia:
+                tipo = coincidencia.group(1)
+
+        if tipo is not None:
+            datos["tipo_operacion"] = tipo.strip()
+
+    if datos["folio"] is None:
+        for etiqueta in (
+            r'n[uú]mero\s+de\s+referencia',
+            r'referencia',
+            r'folio',
+            r'clave\s+de\s+rastreo'
+        ):
+            valor = siguiente_valor(etiqueta, cantidad=2)
+            if valor is None:
+                continue
+
+            coincidencia = re.search(
+                r'(?<!\d)\d{4,}(?!\d)',
+                valor
+            )
+            if coincidencia:
+                datos["folio"] = coincidencia.group(0)
+                break
+
+    def cuenta_asociada(etiquetas):
+        patron_numero = re.compile(
+            r'(?<!\d)(?:[*xX°-]+\s*)?(\d{4,18})(?!\d)'
+        )
+        for indice, linea in enumerate(lineas_fallback):
+            if not re.search(etiquetas, linea, re.IGNORECASE):
+                continue
+
+            for candidato in lineas_fallback[indice:indice + 3]:
+                numero = patron_numero.search(candidato)
+                if numero:
+                    return numero.group(1)
+
+        return None
+
+    if datos["cuenta_destino"] is None:
+        datos["cuenta_destino"] = cuenta_asociada(
+            r'(?:cuenta|tarjeta|clabe)\s+destino\b'
+        )
+
+    if datos["cuenta_origen"] is None:
+        datos["cuenta_origen"] = cuenta_asociada(
+            r'(?:cuenta|tarjeta|clabe)\s+origen\b|cuenta\s+retiro\b'
+        )
+
+    if datos["comision"] is None:
+        valor_comision = siguiente_valor(
+            r'(?:comisi[oó]n|costo|tarifa)\b',
+            cantidad=2
+        )
+        if valor_comision is not None:
+            coincidencia = re.search(
+                r'\$\s*([\d,]+\.\d{2})',
+                valor_comision
+            )
+            if coincidencia:
+                datos["comision"] = float(
+                    coincidencia.group(1).replace(",", "")
+                )
+
+    if datos["monto"] is None:
+        valor_monto = siguiente_valor(r'monto\b', cantidad=2)
+        if valor_monto is not None:
+            coincidencia = re.search(
+                r'\$\s*([\d,]+\.\d{2})',
+                valor_monto
+            )
+            if coincidencia:
+                datos["monto"] = float(
+                    coincidencia.group(1).replace(",", "")
+                )
+
+    if datos["concepto"] is None:
+        concepto = siguiente_valor(r'(?:concepto|motivo)\b', cantidad=2)
+        if concepto is not None:
+            datos["concepto"] = concepto.strip(' \t"\'“”‘’.,')
+
+    if datos["hora"] is None:
+        for indice, linea in enumerate(lineas_fallback):
+            if not re.search(
+                r'autorizaci[oó]n|fecha|operaci[oó]n|transferencia',
+                linea,
+                re.IGNORECASE
+            ):
+                continue
+
+            contexto = " ".join(
+                lineas_fallback[indice:indice + 3]
+            )
+            coincidencia = re.search(
+                r'\b([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?'
+                r'\s*(AM|PM)?\b',
+                contexto,
+                re.IGNORECASE
+            )
+            if coincidencia:
+                hora_texto = coincidencia.group(1) + ":" + coincidencia.group(2)
+                if coincidencia.group(3):
+                    hora_texto += ":" + coincidencia.group(3)
+                if coincidencia.group(4):
+                    hora_texto += " " + coincidencia.group(4).upper()
+                datos["hora"] = hora_texto
+                break
+
     return datos
 
 
@@ -1027,6 +1210,7 @@ def monitorear_chats_whatsapp(page):
     estado_no_leidos = {}
     mensajes_conocidos_por_chat = {}
     ids_conocidos_por_chat = {}
+    chats_pendientes = {}
 
     def obtener_chats():
         chat_list = page.locator(
@@ -1184,7 +1368,7 @@ def monitorear_chats_whatsapp(page):
             "jan": "01", "ene": "01", "january": "01",
             "feb": "02", "febr": "02", "february": "02",
             "mar": "03", "march": "03",
-            "apr": "04", "april": "04",
+            "abr": "04", "apr": "04", "april": "04",
             "may": "05", "mayo": "05",
             "jun": "06", "june": "06",
             "jul": "07", "july": "07",
@@ -1248,7 +1432,38 @@ def monitorear_chats_whatsapp(page):
 
         return None
 
-    def enviar_transferencia_backend(nombre_chat, tipo_archivo, mensaje_id, datos_extraidos):
+    def guardar_comprobante_original(mensaje_id, tipo_archivo, datos_originales):
+        if not datos_originales:
+            return None
+
+        mensaje_id_seguro = re.sub(
+            r'[^A-Za-z0-9._-]',
+            "_",
+            str(mensaje_id)
+        ).strip("._")
+        if not mensaje_id_seguro:
+            return None
+
+        extension = ".pdf" if tipo_archivo == "PDF" else ".jpg"
+        nombre_archivo = f"{mensaje_id_seguro}{extension}"
+        ruta_original = os.path.join(
+            COMPROBANTES_PATH,
+            "originales",
+            nombre_archivo
+        )
+
+        with open(ruta_original, "wb") as archivo:
+            archivo.write(datos_originales)
+
+        return nombre_archivo
+
+    def enviar_transferencia_backend(
+        nombre_chat,
+        tipo_archivo,
+        mensaje_id,
+        datos_extraidos,
+        archivo_comprobante=None
+    ):
         api_url = os.getenv("API_URL", "http://127.0.0.1:5000")
 
         payload = {
@@ -1266,6 +1481,8 @@ def monitorear_chats_whatsapp(page):
             "fecha_transferencia": convertir_fecha_mysql(datos_extraidos.get("fecha")),
             "hora_transferencia": convertir_hora_mysql(datos_extraidos.get("hora")),
         }
+        if archivo_comprobante is not None:
+            payload["archivo_comprobante"] = archivo_comprobante
 
         try:
             respuesta = requests.post(
@@ -1277,7 +1494,31 @@ def monitorear_chats_whatsapp(page):
             if respuesta.status_code == 201:
                 print("[API OK] Transferencia guardada correctamente")
             elif respuesta.status_code == 409:
-                print("[API DUPLICADO] La transferencia ya estaba registrada")
+                try:
+                    duplicado = respuesta.json()
+                except ValueError:
+                    duplicado = {}
+
+                if duplicado.get("duplicate"):
+                    tipo_duplicado = duplicado.get(
+                        "duplicate_type",
+                        "transferencia"
+                    )
+                    id_existente = duplicado.get(
+                        "id_transferencia_existente"
+                    )
+                    detalle = (
+                        f" | existente: #{id_existente}"
+                        if id_existente is not None
+                        else ""
+                    )
+                    print(
+                        "[API DUPLICADO]",
+                        tipo_duplicado,
+                        detalle
+                    )
+                else:
+                    print("[API DUPLICADO] La transferencia ya estaba registrada")
             else:
                 print("[API ERROR] No se pudo enviar la transferencia al backend")
                 try:
@@ -1291,7 +1532,8 @@ def monitorear_chats_whatsapp(page):
         nombre_chat,
         tipo_archivo,
         mensaje_id,
-        datos_extraidos
+        datos_extraidos,
+        datos_originales=None
     ):
         print()
         print("====================================")
@@ -1312,11 +1554,17 @@ def monitorear_chats_whatsapp(page):
         print("Hora:", datos_extraidos["hora"])
         print("====================================")
 
+        archivo_comprobante = guardar_comprobante_original(
+            mensaje_id,
+            tipo_archivo,
+            datos_originales
+        )
         enviar_transferencia_backend(
             nombre_chat,
             tipo_archivo,
             mensaje_id,
             datos_extraidos,
+            archivo_comprobante
         )
 
     def debug_page(page, etapa):
@@ -1980,7 +2228,8 @@ def monitorear_chats_whatsapp(page):
                     nombre_chat,
                     tipo_archivo,
                     mensaje_id,
-                    datos_extraidos
+                    datos_extraidos,
+                    datos_imagen
                 )
                 return
 
@@ -2442,7 +2691,8 @@ def monitorear_chats_whatsapp(page):
                     nombre_chat,
                     tipo_archivo,
                     mensaje_id,
-                    datos_extraidos
+                    datos_extraidos,
+                    datos_pdf
                 )
                 cerrar_visor_pdf(page)
                 debug_page(page, "después cerrar visor")
@@ -2634,7 +2884,9 @@ def monitorear_chats_whatsapp(page):
             cantidad_mensajes
         )
 
+        bloque_no_leidos = None
         if nuevos_por_unread > 0 or revision_inicial:
+            bloque_no_leidos = obtener_bloque_no_leidos_renderizado(page)
             diagnosticar_separador_no_leidos(page)
 
         tipo_esperado = tipo_esperado_de_firma(
@@ -2643,7 +2895,8 @@ def monitorear_chats_whatsapp(page):
         )
 
         mensajes_actuales = []
-        inicio = max(0, cantidad_mensajes - 30)
+        ventana_mensajes = max(30, nuevos_por_unread)
+        inicio = max(0, cantidad_mensajes - ventana_mensajes)
 
         for i in range(inicio, cantidad_mensajes):
             mensaje = mensajes.nth(i)
@@ -2712,26 +2965,34 @@ def monitorear_chats_whatsapp(page):
                 )
                 return
 
-            margen_seguridad_primer_evento = 2
-            unread_orientacion = max(1, nuevos_por_unread)
-            cantidad_candidatos = min(
-                len(mensajes_actuales),
-                unread_orientacion + margen_seguridad_primer_evento
-            )
-            if revision_inicial:
-                entrantes = [
+            bloque_completo = True
+            if bloque_no_leidos and bloque_no_leidos["ids"]:
+                ids_bloque = set(bloque_no_leidos["ids"])
+                nuevos_registros = [
                     registro for registro in mensajes_actuales
-                    if registro[3] == "entrante"
+                    if registro[0] in ids_bloque
                 ]
-                nuevos_registros = entrantes[-nuevos_por_unread:]
+                bloque_completo = (
+                    len(bloque_no_leidos["ids"])
+                    >= bloque_no_leidos["cantidad"]
+                )
             else:
+                cantidad_candidatos = min(
+                    len(mensajes_actuales),
+                    max(1, nuevos_por_unread)
+                )
                 nuevos_registros = mensajes_actuales[-cantidad_candidatos:]
+                bloque_completo = (
+                    nuevos_por_unread <= 0
+                    or len(mensajes_actuales) >= nuevos_por_unread
+                )
 
             print("[PRIMER EVENTO SIN FRONTERA]")
             print("Chat:", nombre)
             print("Unread nuevos:", nuevos_por_unread)
             print("Mensajes renderizados:", len(mensajes_actuales))
-            print("Candidatos recientes:", len(nuevos_registros))
+            print("Mensajes unread renderizados:", len(nuevos_registros))
+            print("Bloque unread completo:", bloque_completo)
 
             print("[LOTE NUEVO REAL]")
             print("Chat:", nombre)
@@ -2769,6 +3030,13 @@ def monitorear_chats_whatsapp(page):
                     id_mensaje,
                     tipo_mensaje
                 )
+
+            if not bloque_completo:
+                print(
+                    "[PENDIENTE] El contador unread supera los mensajes "
+                    "renderizados; no se crea frontera todavía."
+                )
+                return False
 
             ultimo_id_observado = ids_actuales[-1] if ids_actuales else None
             mensajes_conocidos_por_chat[nombre] = ids_actuales[-50:]
@@ -3378,6 +3646,53 @@ def monitorear_chats_whatsapp(page):
             print("Conv-msg antes:", separador["antes"])
             print("Conv-msg después:", separador["despues"])
 
+    def obtener_bloque_no_leidos_renderizado(page):
+        panel = page.locator(
+            '[data-testid="conversation-panel-messages"]'
+        )
+
+        if panel.count() == 0:
+            return None
+
+        return panel.evaluate(
+            """
+            panel => {
+                const patron = /\\b(\\d+)\\s+mensajes?\\s+no\\s+le[ií]dos?\\b/i;
+                const mensajes = [...panel.querySelectorAll(
+                    '[data-testid^="conv-msg-"]'
+                )];
+                const elementos = [...panel.querySelectorAll('*')]
+                    .filter(elemento => {
+                        const texto = (elemento.innerText || '').trim();
+                        return patron.test(texto) && ![...elemento.children]
+                            .some(hijo => patron.test(
+                                (hijo.innerText || '').trim()
+                            ));
+                    });
+
+                for (const elemento of elementos) {
+                    const coincidencia = (elemento.innerText || '')
+                        .match(patron);
+                    const ids = mensajes.filter(mensaje => (
+                        elemento.compareDocumentPosition(mensaje)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                    )).map(mensaje => (
+                        mensaje.getAttribute('data-testid')
+                    ));
+
+                    if (coincidencia && ids.length > 0) {
+                        return {
+                            cantidad: Number(coincidencia[1]),
+                            ids
+                        };
+                    }
+                }
+
+                return null;
+            }
+            """
+        )
+
     def diagnosticar_direccion_desconocida(page, mensaje):
         def atributos_elemento(elemento):
             return elemento.evaluate(
@@ -3604,6 +3919,19 @@ def monitorear_chats_whatsapp(page):
 
         return True
 
+    def guardar_chat_pendiente(chat_no_leido, motivo):
+        chats_pendientes[chat_no_leido["nombre"]] = {
+            "firma": chat_no_leido["firma"],
+            "preview": chat_no_leido.get("preview"),
+            "unread_count": chat_no_leido["unread_count"],
+        }
+        print(
+            "[PENDIENTE] Chat conservado para reintento:",
+            chat_no_leido["nombre"],
+            "| motivo:",
+            motivo
+        )
+
     def revisar_no_leidos_iniciales():
         filas_iniciales = page.locator(
             '[data-testid="cell-frame-container"]'
@@ -3678,6 +4006,10 @@ def monitorear_chats_whatsapp(page):
                     "[AVISO] No se encontró actualmente la fila del chat:",
                     nombre
                 )
+                guardar_chat_pendiente(
+                    chat_no_leido,
+                    "fila no disponible"
+                )
                 continue
 
             if nombre.lower() == "archivados":
@@ -3700,6 +4032,10 @@ def monitorear_chats_whatsapp(page):
                     "[AVISO] Dialog modal abierto; se omite el chat:",
                     nombre
                 )
+                guardar_chat_pendiente(
+                    chat_no_leido,
+                    "dialogo modal abierto"
+                )
                 continue
 
             try:
@@ -3711,6 +4047,10 @@ def monitorear_chats_whatsapp(page):
                     "|",
                     error
                 )
+                guardar_chat_pendiente(
+                    chat_no_leido,
+                    "fallo temporal al abrir"
+                )
                 continue
 
             if not confirmar_chat_abierto(nombre):
@@ -3718,12 +4058,16 @@ def monitorear_chats_whatsapp(page):
                     "[ERROR] No se pudo confirmar que se abrió el chat:",
                     nombre
                 )
+                guardar_chat_pendiente(
+                    chat_no_leido,
+                    "apertura no confirmada"
+                )
                 continue
 
             print("[CHAT ABIERTO]", nombre)
 
             vistos_antes = len(mensajes_vistos)
-            revisar_chat(
+            bloque_completo = revisar_chat(
                 nombre,
                 chat_no_leido["firma"],
                 chat_no_leido["preview"],
@@ -3731,6 +4075,8 @@ def monitorear_chats_whatsapp(page):
                 nuevos_por_unread=chat_no_leido["unread_count"],
                 revision_inicial=True
             )
+            if bloque_completo is not False:
+                chats_pendientes.pop(nombre, None)
             archivos_procesados += len(mensajes_vistos) - vistos_antes
 
         print("====================================")
@@ -3858,6 +4204,47 @@ def monitorear_chats_whatsapp(page):
         print("Observando todos los chats...")
         print("Esperando mensajes nuevos...")
 
+        def reintentar_chats_pendientes():
+            for nombre, pendiente in list(chats_pendientes.items()):
+                fila = localizar_fila_por_nombre(nombre)
+                if fila is None:
+                    continue
+
+                if not cerrar_dialogo_reenvio(page):
+                    continue
+
+                try:
+                    fila.click(timeout=1500)
+                    if not confirmar_chat_abierto(nombre):
+                        raise RuntimeError(
+                            "No se pudo confirmar la apertura del chat"
+                        )
+
+                    bloque_completo = revisar_chat(
+                        nombre,
+                        pendiente["firma"],
+                        pendiente["preview"],
+                        nuevos_por_unread=pendiente["unread_count"],
+                        revision_inicial=True
+                    )
+                    if bloque_completo is False:
+                        continue
+
+                    estado_chats[nombre] = pendiente["firma"]
+                    estado_no_leidos[nombre] = 0
+                    chats_pendientes.pop(nombre, None)
+                    print(
+                        "[PENDIENTE RESUELTO] Chat revisado:",
+                        nombre
+                    )
+                except Exception as error:
+                    print(
+                        "[PENDIENTE] Se reintentará después:",
+                        nombre,
+                        "|",
+                        error
+                    )
+
         while True:
             try:
                 if page.is_closed():
@@ -3866,6 +4253,8 @@ def monitorear_chats_whatsapp(page):
                         "fue cerrada."
                     )
                     break
+
+                reintentar_chats_pendientes()
 
                 filas = page.locator(
                     '[data-testid="cell-frame-container"]'
@@ -3910,8 +4299,6 @@ def monitorear_chats_whatsapp(page):
                     if not unread_aumento and not firma_cambio:
                         continue
 
-                    estado_chats[nombre] = firma_actual
-                    estado_no_leidos[nombre] = unread_actual
                     tipo_esperado = tipo_esperado_de_firma(
                         firma_actual,
                         snapshot["preview"]
@@ -3945,6 +4332,11 @@ def monitorear_chats_whatsapp(page):
                             "se omite el click de la fila.",
                             nombre
                         )
+                        chats_pendientes[nombre] = {
+                            "firma": snapshot["texto_completo"],
+                            "preview": snapshot["preview"],
+                            "unread_count": nuevos_por_unread,
+                        }
                         continue
 
                     try:
@@ -3956,15 +4348,37 @@ def monitorear_chats_whatsapp(page):
                             "|",
                             error
                         )
+                        chats_pendientes[nombre] = {
+                            "firma": snapshot["texto_completo"],
+                            "preview": snapshot["preview"],
+                            "unread_count": nuevos_por_unread,
+                        }
                         continue
                     page.wait_for_timeout(500)
-                    revisar_chat(
-                        nombre,
-                        snapshot["texto_completo"],
-                        snapshot["preview"],
-                        nuevos_por_unread=nuevos_por_unread
-                    )
+                    try:
+                        bloque_completo = revisar_chat(
+                            nombre,
+                            snapshot["texto_completo"],
+                            snapshot["preview"],
+                            nuevos_por_unread=nuevos_por_unread
+                        )
+                        if bloque_completo is False:
+                            chats_pendientes[nombre] = {
+                                "firma": snapshot["texto_completo"],
+                                "preview": snapshot["preview"],
+                                "unread_count": nuevos_por_unread,
+                            }
+                            continue
+                    except Exception:
+                        chats_pendientes[nombre] = {
+                            "firma": snapshot["texto_completo"],
+                            "preview": snapshot["preview"],
+                            "unread_count": nuevos_por_unread,
+                        }
+                        raise
+                    estado_chats[nombre] = firma_actual
                     estado_no_leidos[nombre] = 0
+                    chats_pendientes.pop(nombre, None)
 
                 print(
                     "[MONITOR] activo | chats visibles:",
