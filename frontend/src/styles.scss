@@ -1,3 +1,35 @@
 html, body { min-height: 100%; }
 body { margin: 0; background: #f3f5f7; }
 button, input, select { font-family: inherit; }
+
+.session-user { display: flex; align-items: center; gap: 10px; margin-left: auto; color: #07153D; font-size: .72rem; white-space: nowrap; }
+.session-user button { padding: 0; border: 0; color: #142C98; background: transparent; font: inherit; font-size: .7rem; cursor: pointer; }
+.session-user button:hover { color: #102680; text-decoration: underline; }
+.mobile-state-controls { display: none; }
+
+@media (max-width: 768px) {
+	.topbar { gap: 14px; padding-inline: 18px; }
+	.main-nav { display: none; }
+	.app-shell, .detail-shell { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 650px) {
+	.topbar { gap: 10px; padding: 0 12px; }
+	.brand { flex: 0 0 110px; width: 110px; }
+	.brand img { width: 190px; height: 82px; }
+	.main-nav { min-width: 0; flex: 1 1 auto; gap: 16px; overflow-x: auto; }
+	.session-user > span { display: none; }
+	.session-user { flex: 0 0 auto; gap: 6px; }
+	.session-user button { font-size: .65rem; }
+	.mobile-state-controls { position: absolute; right: 16px; bottom: 11px; left: 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+	.states-menu-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; height: 30px; padding: 0 10px; border: 1px solid rgba(255, 255, 255, .24); border-radius: 5px; color: #fff; background: rgba(255, 255, 255, .08); font: inherit; font-size: .72rem; cursor: pointer; }
+	.states-menu-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+	.mobile-state-active { min-width: 0; overflow: hidden; color: #e6f1f6; font-size: .72rem; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+	.states-dropdown { position: absolute; z-index: 4; top: calc(100% + 8px); left: 0; width: min(280px, calc(100vw - 32px)); padding: 6px; border: 1px solid #E1E4E8; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(7, 21, 61, .16); }
+	.states-dropdown button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; min-height: 35px; padding: 0 9px; border: 0; border-radius: 4px; color: #07153D; background: transparent; font: inherit; font-size: .74rem; text-align: left; cursor: pointer; }
+	.states-dropdown button:hover, .states-dropdown button.active { background: #F7FAED; }
+	.states-dropdown button.active { color: #4D7C13; font-weight: 700; }
+	.dropdown-state-name { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+	.dropdown-state-name i { width: 13px; color: #A8CB2A; font-size: .7rem; font-style: normal; visibility: hidden; }
+	.states-dropdown button.active .dropdown-state-name i { visibility: visible; }
+}

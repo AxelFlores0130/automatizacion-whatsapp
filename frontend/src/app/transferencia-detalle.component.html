@@ -8,7 +8,11 @@
       <button type="button" class="nav-item nav-button">Clientes</button>
       <button type="button" class="nav-item nav-button">Pagos</button>
     </nav>
-    <div class="session-mark" aria-label="Indicador de sesión"></div>
+    <div class="session-user">
+      <div class="session-mark" aria-label="Indicador de sesión"></div>
+      <span>{{ usuarioActual?.nombre }} {{ usuarioActual?.apellido }}</span>
+      <button type="button" (click)="cerrarSesion()">Cerrar sesión</button>
+    </div>
   </header>
 
   <main class="detail-page">

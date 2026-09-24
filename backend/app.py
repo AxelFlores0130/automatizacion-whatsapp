@@ -51,6 +51,141 @@ def health():
     }), 200
 
 
+@app.post("/api/auth/login")
+def iniciar_sesion():
+    payload = request.get_json(silent=True) or {}
+    usuario = str(payload.get("usuario") or "").strip()
+    contrasena = str(payload.get("contrasena") or "").strip()
+
+    if not usuario or not contrasena:
+        return jsonify({
+            "ok": False,
+            "mensaje": "Usuario y contraseña son obligatorios.",
+        }), 400
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id_usuario, nombre, apellido, usuario, contrasena, telefono, estado
+            FROM usuarios
+            WHERE usuario = %s
+            LIMIT 1
+            """,
+            (usuario,)
+        )
+        empleado = cursor.fetchone()
+
+        if empleado is None or str(empleado.get("contrasena")) != contrasena:
+            return jsonify({
+                "ok": False,
+                "mensaje": "Usuario o contraseña incorrectos.",
+            }), 401
+
+        if empleado.get("estado") != "ACTIVO":
+            return jsonify({
+                "ok": False,
+                "mensaje": "Tu usuario se encuentra inactivo. Contacta al administrador.",
+            }), 403
+
+        return jsonify({
+            "ok": True,
+            "usuario": {
+                "id_usuario": empleado.get("id_usuario"),
+                "nombre": empleado.get("nombre"),
+                "apellido": empleado.get("apellido"),
+                "usuario": empleado.get("usuario"),
+                "telefono": empleado.get("telefono"),
+            },
+        }), 200
+
+    except Error:
+        if connection is not None:
+            connection.rollback()
+        return jsonify({
+            "ok": False,
+            "mensaje": "No fue posible iniciar sesión.",
+        }), 500
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None and connection.is_connected():
+            connection.close()
+
+
+@app.post("/api/auth/registro")
+def registrar_usuario():
+    payload = request.get_json(silent=True) or {}
+
+    nombre = str(payload.get("nombre") or "").strip()
+    apellido = str(payload.get("apellido") or "").strip()
+    telefono = str(payload.get("telefono") or "").strip() or None
+    usuario = str(payload.get("usuario") or "").strip()
+    contrasena = str(payload.get("contrasena") or "").strip()
+
+    if not nombre or not apellido or not usuario or not contrasena:
+        return jsonify({
+            "ok": False,
+            "mensaje": "Nombre, apellido, usuario y contraseña son obligatorios.",
+        }), 400
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id_usuario FROM usuarios WHERE usuario = %s LIMIT 1",
+            (usuario,)
+        )
+        if cursor.fetchone() is not None:
+            return jsonify({
+                "ok": False,
+                "mensaje": "El nombre de usuario ya está registrado.",
+            }), 409
+
+        cursor.execute(
+            """
+            INSERT INTO usuarios (nombre, apellido, usuario, contrasena, telefono)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (nombre, apellido, usuario, contrasena, telefono)
+        )
+        connection.commit()
+
+        return jsonify({
+            "ok": True,
+            "mensaje": "Cuenta creada correctamente.",
+        }), 201
+
+    except mysql.connector.IntegrityError:
+        if connection is not None:
+            connection.rollback()
+        return jsonify({
+            "ok": False,
+            "mensaje": "El nombre de usuario ya está registrado.",
+        }), 409
+    except Error:
+        if connection is not None:
+            connection.rollback()
+        return jsonify({
+            "ok": False,
+            "mensaje": "No fue posible crear la cuenta.",
+        }), 500
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None and connection.is_connected():
+            connection.close()
+
+
 def _serializar_hora_mysql(valor):
     if valor is None:
         return None

@@ -1,0 +1,85 @@
+:host {
+  display: block;
+  min-height: 100dvh;
+  color: #07153D;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+.auth-shell {
+  position: relative;
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 32px 20px;
+  overflow: hidden;
+  background: #FAFBFD;
+}
+
+.auth-watermark {
+  position: absolute;
+  z-index: 0;
+  height: auto;
+  opacity: .09;
+  filter: blur(1px);
+  pointer-events: none;
+  user-select: none;
+  overflow: visible;
+}
+
+.auth-watermark-top { top: 15px; left: -20px; width: clamp(450px, 42vw, 520px); }
+.auth-watermark-bottom { right: -80px; bottom: -40px; width: clamp(400px, 36vw, 480px); }
+
+.auth-card {
+  position: relative;
+  z-index: 1;
+  width: min(520px, 100%);
+  padding: 34px 40px 30px;
+  border: 1px solid #E1E4E8;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 16px 42px rgba(7, 21, 61, .08);
+}
+
+.auth-card.register-card { width: min(560px, 100%); }
+.auth-brand { display: block; width: 190px; height: auto; margin: 0 auto 20px; }
+.auth-heading { margin: 0; color: #07153D; font-size: 1.55rem; font-weight: 750; text-align: center; }
+.auth-subheading { margin: 8px 0 26px; color: #8A94A8; font-size: .86rem; text-align: center; }
+.auth-form { display: grid; gap: 16px; }
+.auth-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+.auth-field { display: grid; gap: 7px; }
+.auth-label { color: #07153D; font-size: .76rem; font-weight: 700; }
+.auth-control { position: relative; }
+.auth-control svg { position: absolute; top: 50%; left: 13px; width: 18px; height: 18px; color: #8A94A8; pointer-events: none; transform: translateY(-50%); }
+.auth-control input, .auth-field > input { width: 100%; height: 44px; padding: 0 42px; border: 1px solid #E1E4E8; border-radius: 7px; color: #07153D; background: #fff; font: inherit; font-size: .82rem; outline: 0; }
+.auth-control input::placeholder, .auth-field > input::placeholder { color: #A3ACB9; }
+.auth-control input:focus, .auth-field > input:focus { border-color: #142C98; box-shadow: 0 0 0 3px rgba(20, 44, 152, .1); }
+.auth-control input.ng-invalid.ng-touched, .auth-field > input.ng-invalid.ng-touched { border-color: #C93636; }
+.password-toggle { position: absolute; top: 50%; right: 10px; display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; color: #8A94A8; background: transparent; cursor: pointer; transform: translateY(-50%); }
+.password-toggle svg { position: static; width: 17px; height: 17px; transform: none; }
+.auth-options { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: -2px; }
+.remember-option { display: inline-flex; align-items: center; gap: 7px; color: #526474; font-size: .75rem; }
+.remember-option input { width: 15px; height: 15px; accent-color: #142C98; }
+.forgot-link { color: #142C98; font-size: .74rem; text-decoration: none; }
+.forgot-link:hover { text-decoration: underline; }
+.auth-submit { display: inline-flex; width: 100%; height: 45px; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; border: 0; border-radius: 7px; color: #fff; background: #142C98; font: inherit; font-size: .84rem; font-weight: 700; cursor: pointer; }
+.auth-submit:hover:not(:disabled) { background: #102680; }
+.auth-submit:disabled { cursor: wait; opacity: .7; }
+.auth-error, .auth-success { padding: 10px 12px; border-radius: 5px; font-size: .76rem; line-height: 1.4; }
+.auth-error { color: #963f3f; background: #fff0f0; }
+.auth-success { color: #4D7C13; background: #F0F8EC; }
+.field-error { color: #963f3f; font-size: .68rem; }
+.auth-switch { margin: 21px 0 0; color: #8A94A8; font-size: .76rem; text-align: center; }
+.auth-switch a { color: #142C98; font-weight: 700; text-decoration: none; }
+.auth-switch a:hover { text-decoration: underline; }
+
+@media (max-width: 620px) {
+  .auth-shell { padding: 20px; }
+  .auth-card, .auth-card.register-card { padding: 28px 22px 24px; }
+  .auth-fields { grid-template-columns: 1fr; gap: 16px; }
+  .auth-options { align-items: flex-start; flex-wrap: wrap; }
+  .auth-watermark { opacity: .07; }
+  .auth-watermark-top { top: 5px; left: -35px; width: clamp(300px, 75vw, 360px); }
+  .auth-watermark-bottom { right: -55px; bottom: -25px; width: clamp(280px, 68vw, 330px); }
+}

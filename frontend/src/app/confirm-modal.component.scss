@@ -1,26 +1,35 @@
 :host {
+  --dorian-blue: #142C98;
+  --dorian-blue-dark: #102680;
   display: contents;
 }
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
-  display: grid;
-  place-items: center;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
+  box-sizing: border-box;
   background: rgba(7, 21, 61, .4);
   animation: modal-fade-in 180ms ease-out;
 }
 
 .confirm-modal {
-  width: min(430px, calc(100vw - 32px));
+  width: calc(100% - 32px);
+  max-width: 520px;
+  min-width: 0;
+  max-height: calc(100dvh - 32px);
   padding: 24px;
+  box-sizing: border-box;
   border: 1px solid #E1E4E8;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 14px 36px rgba(7, 21, 61, .18);
   animation: modal-scale-in 180ms ease-out;
+  overflow-y: auto;
 }
 
 .modal-indicator {
@@ -37,7 +46,7 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #1F73F1;
+  background: var(--dorian-blue);
 }
 
 .modal-indicator.danger { background: #FBE8E8; }
@@ -74,10 +83,12 @@ h2 {
   display: flex;
   justify-content: flex-end;
   gap: 9px;
+  flex-wrap: wrap;
   margin-top: 24px;
 }
 
 .modal-actions button {
+  min-width: 0;
   min-height: 34px;
   padding: 0 14px;
   border-radius: 4px;
@@ -97,10 +108,12 @@ h2 {
 }
 
 .confirm-button {
-  border: 1px solid #1F73F1;
+  border: 1px solid var(--dorian-blue);
   color: #fff;
-  background: #1F73F1;
+  background: var(--dorian-blue);
 }
+
+.confirm-button:hover:not(:disabled) { border-color: var(--dorian-blue-dark); background: var(--dorian-blue-dark); }
 
 .confirm-button.danger {
   border-color: #C93636;
@@ -108,7 +121,7 @@ h2 {
 }
 
 button:focus-visible {
-  outline: 3px solid rgba(31, 115, 241, .25);
+  outline: 3px solid rgba(20, 44, 152, .25);
   outline-offset: 2px;
 }
 

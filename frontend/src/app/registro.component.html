@@ -1,0 +1,79 @@
+<main class="auth-shell">
+  <svg class="auth-watermark auth-watermark-top" viewBox="0 0 200 130" aria-hidden="true">
+    <path d="M-10 115 L110 20 L205 115" fill="none" stroke="#A8CB2A" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M165 72 L165 30" fill="none" stroke="#A8CB2A" stroke-width="18" stroke-linecap="round" />
+  </svg>
+  <svg class="auth-watermark auth-watermark-bottom" viewBox="0 0 200 130" aria-hidden="true">
+    <path d="M-10 115 L110 20 L205 115" fill="none" stroke="#A8CB2A" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M165 72 L165 30" fill="none" stroke="#A8CB2A" stroke-width="18" stroke-linecap="round" />
+  </svg>
+
+  <section class="auth-card register-card" aria-labelledby="registro-title">
+    <img class="auth-brand" src="/dorian-logo.png" alt="Dorian Muebles" />
+    <h1 id="registro-title" class="auth-heading">Crear cuenta</h1>
+    <p class="auth-subheading">Registra tus datos para continuar</p>
+
+    <form class="auth-form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <div class="auth-fields">
+        <div class="auth-field">
+          <label class="auth-label" for="registro-nombre">Nombre</label>
+          <input id="registro-nombre" type="text" formControlName="nombre" placeholder="Ingresa tu nombre" autocomplete="given-name" />
+          @if (form.controls.nombre.touched && form.controls.nombre.invalid) { <span class="field-error">Ingresa tu nombre.</span> }
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="registro-apellido">Apellido</label>
+          <input id="registro-apellido" type="text" formControlName="apellido" placeholder="Ingresa tu apellido" autocomplete="family-name" />
+          @if (form.controls.apellido.touched && form.controls.apellido.invalid) { <span class="field-error">Ingresa tu apellido.</span> }
+        </div>
+      </div>
+
+      <div class="auth-field">
+        <label class="auth-label" for="registro-telefono">Teléfono</label>
+        <input id="registro-telefono" type="tel" formControlName="telefono" placeholder="Ingresa tu teléfono" autocomplete="tel" />
+      </div>
+
+      <div class="auth-field">
+        <label class="auth-label" for="registro-usuario">Usuario</label>
+        <div class="auth-control">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5.5 20c.7-3.2 2.9-5 6.5-5s5.8 1.8 6.5 5" /></svg>
+          <input id="registro-usuario" type="text" formControlName="usuario" placeholder="Crea tu usuario" autocomplete="username" />
+        </div>
+        @if (form.controls.usuario.touched && form.controls.usuario.invalid) { <span class="field-error">Ingresa un usuario.</span> }
+      </div>
+
+      <div class="auth-fields">
+        <div class="auth-field">
+          <label class="auth-label" for="registro-contrasena">Contraseña</label>
+          <div class="auth-control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+            <input id="registro-contrasena" [type]="passwordVisible() ? 'text' : 'password'" formControlName="contrasena" placeholder="Crea una contraseña" autocomplete="new-password" />
+            <button class="password-toggle" type="button" [attr.aria-label]="passwordVisible() ? 'Ocultar contraseña' : 'Mostrar contraseña'" (click)="togglePassword()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z" /><circle cx="12" cy="12" r="2.5" /></svg>
+            </button>
+          </div>
+          @if (form.controls.contrasena.touched && form.controls.contrasena.invalid) { <span class="field-error">Ingresa una contraseña.</span> }
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="registro-confirmar">Confirmar contraseña</label>
+          <div class="auth-control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+            <input id="registro-confirmar" [type]="confirmPasswordVisible() ? 'text' : 'password'" formControlName="confirmarContrasena" placeholder="Repite tu contraseña" autocomplete="new-password" />
+            <button class="password-toggle" type="button" [attr.aria-label]="confirmPasswordVisible() ? 'Ocultar contraseña' : 'Mostrar contraseña'" (click)="toggleConfirmPassword()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z" /><circle cx="12" cy="12" r="2.5" /></svg>
+            </button>
+          </div>
+          @if (form.controls.confirmarContrasena.touched && form.controls.confirmarContrasena.invalid) { <span class="field-error">Confirma tu contraseña.</span> }
+        </div>
+      </div>
+
+      @if (errorMessage()) { <div class="auth-error" role="alert">{{ errorMessage() }}</div> }
+      @if (successMessage()) { <div class="auth-success" role="status">{{ successMessage() }}</div> }
+
+      <button class="auth-submit" type="submit" [disabled]="submitting()">
+        {{ submitting() ? 'Creando cuenta...' : 'Crear cuenta' }} <span aria-hidden="true">→</span>
+      </button>
+    </form>
+
+    <p class="auth-switch">¿Ya tienes una cuenta? <a routerLink="/login">Iniciar sesión</a></p>
+  </section>
+</main>

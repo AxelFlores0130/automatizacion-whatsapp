@@ -13,6 +13,7 @@ import { catchError, of } from 'rxjs';
 import { EstadoTransferencia, Transferencia } from './transferencia.model';
 import { TransferenciasApiService } from './transferencias-api.service';
 import { ConfirmModalComponent } from './confirm-modal.component';
+import { AuthService } from './auth.service';
 
 type ConfirmAction = 'reject' | 'restore' | 'delete';
 
@@ -28,6 +29,8 @@ export class TransferenciaDetalleComponent {
   private readonly destroyRef = inject(DestroyRef);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly router = inject(Router);
+  protected readonly auth = inject(AuthService);
+  protected readonly usuarioActual = this.auth.getCurrentUser();
 
   protected readonly transferencia = signal<Transferencia | null>(null);
   protected readonly cargando = signal(true);
@@ -46,6 +49,11 @@ export class TransferenciaDetalleComponent {
     this.sanitizer.bypassSecurityTrustResourceUrl(this.comprobanteUrl);
   protected anteriorId: number | null = null;
   protected siguienteId: number | null = null;
+
+  protected cerrarSesion(): void {
+    this.auth.logout();
+    void this.router.navigate(['/login']);
+  }
 
   protected readonly modalConfig = computed(() => {
     switch (this.accionModal()) {

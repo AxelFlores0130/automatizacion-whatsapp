@@ -6,7 +6,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { catchError, of } from 'rxjs';
 import {
@@ -14,6 +14,7 @@ import {
   Transferencia,
 } from './transferencia.model';
 import { TransferenciasApiService } from './transferencias-api.service';
+import { AuthService } from './auth.service';
 
 @Component({
   imports: [CurrencyPipe, DatePipe, RouterLink],
@@ -24,6 +25,9 @@ import { TransferenciasApiService } from './transferencias-api.service';
 export class TransferenciasComponent {
   private readonly api = inject(TransferenciasApiService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly router = inject(Router);
+  protected readonly auth = inject(AuthService);
+  protected readonly usuarioActual = this.auth.getCurrentUser();
   private pollingId: ReturnType<typeof setInterval> | undefined;
 
   protected readonly transferencias = signal<Transferencia[]>([]);
@@ -31,6 +35,7 @@ export class TransferenciasComponent {
   protected readonly error = signal(false);
   protected readonly busqueda = signal('');
   protected readonly estadoSeleccionado = signal('TODOS');
+  protected readonly menuEstadosAbierto = signal(false);
   protected readonly tipoSeleccionado = signal('TODOS');
   protected readonly estados = [
     'TODOS',
@@ -90,6 +95,27 @@ export class TransferenciasComponent {
 
   protected seleccionarEstado(estado: string): void {
     this.estadoSeleccionado.set(estado);
+    this.menuEstadosAbierto.set(false);
+  }
+
+  protected alternarMenuEstados(): void {
+    this.menuEstadosAbierto.update((abierto) => !abierto);
+  }
+
+  protected cerrarMenuEstados(): void {
+    this.menuEstadosAbierto.set(false);
+  }
+
+  protected cerrarSesion(): void {
+    this.auth.logout();
+    void this.router.navigate(['/login']);
+  }
+
+  protected abrirTransferencia(event: Event, id: number): void {
+    if (event instanceof KeyboardEvent && event.key === ' ') {
+      event.preventDefault();
+    }
+    void this.router.navigate(['/transferencias', id]);
   }
 
   protected actualizarBusqueda(event: Event): void {
