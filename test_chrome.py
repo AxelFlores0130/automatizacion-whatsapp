@@ -78,6 +78,117 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
         if linea.strip()
     ]
 
+    lineas_combinadas = lineas6 + lineas11
+    texto_combinado = texto_psm6 + "\n" + texto_psm11
+
+    def normalizar_valor_texto(valor):
+        if valor is None:
+            return None
+
+        valor = str(valor).strip()
+        valor = valor.strip(' 	\r\n\"\'“”‘’.,:;')
+        valor = re.sub(r'^(?:a|para|destinatario|beneficiario|recibira|recibirá|enviaste)\s*[:\-]?\s*', '', valor, flags=re.IGNORECASE)
+        return valor.strip() or None
+
+    def texto_es_invalido_para_persona(texto):
+        if texto is None:
+            return True
+
+        texto = texto.strip().lower()
+        if not texto:
+            return True
+
+        invalidos = (
+            'dato no verificado',
+            'en proceso',
+            'cuenta',
+            'banco',
+            'referencia',
+            'folio',
+            'clabe',
+            'cantidad total',
+            'id de movimiento',
+            'clave de rastreo',
+            'numero de cuenta',
+            'número de cuenta',
+            'numero de referencia',
+            'número de referencia',
+            'tipo de operacion',
+            'tipo operación',
+            'comision',
+            'concepto',
+            'monto',
+            'enviaste',
+            'cantidad',
+            'transferencia',
+            'spei',
+            'pago',
+            'operacion',
+            'operación',
+        )
+        return any(invalido in texto for invalido in invalidos)
+
+    def extraer_monto_desde_texto(texto):
+        if not texto:
+            return None
+
+        coincidencia = re.search(r'\$\s*([\d,]+\.\d{2})', texto)
+        if coincidencia:
+            try:
+                return float(coincidencia.group(1).replace(',', ''))
+            except ValueError:
+                pass
+
+        coincidencia = re.search(r'(?<!\d)([\d,]+\.\d{2})(?!\d)', texto)
+        if coincidencia and '$' in texto:
+            try:
+                return float(coincidencia.group(1).replace(',', ''))
+            except ValueError:
+                pass
+
+        return None
+
+    def extraer_cuenta_desde_texto(texto):
+        if not texto:
+            return None
+
+        candidato = re.search(
+            r'(?i)(?:[A-Z]{2,}\s*[-–]\s*)?(\d{10,22})(?!\d)',
+            texto
+        )
+        if not candidato:
+            return None
+
+        numero = candidato.group(1)
+        if len(numero) < 10:
+            return None
+
+        if re.search(r'(?i)(?:folio|referencia|clave\s+de\s+rastreo|id\s+de\s+movimiento|cantidad\s+total|monto|fecha|hora)', texto):
+            return None
+
+        return numero
+
+    def detectar_destinatario_robusto():
+        for i, linea in enumerate(lineas_combinadas):
+            texto = linea.strip()
+            if not texto:
+                continue
+
+            if re.search(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá|nombre\s+del\s+beneficiario|enviaste)\s*[:\-]?\s*', texto):
+                candidato = normalizar_valor_texto(texto)
+                if candidato and not texto_es_invalido_para_persona(candidato):
+                    if not re.search(r'(?i)(?:cuenta|banco|referencia|folio|monto|cantidad|transferencia|spei|clabe)', candidato):
+                        return candidato
+
+            if re.search(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá)\s*[:\-]?\s*', texto):
+                siguiente = lineas_combinadas[i + 1] if i + 1 < len(lineas_combinadas) else ""
+                candidato = normalizar_valor_texto(siguiente)
+                if candidato and not texto_es_invalido_para_persona(candidato):
+                    if not re.search(r'(?i)(?:cuenta|banco|referencia|folio|monto|cantidad|transferencia|spei|clabe)', candidato):
+                        return candidato
+
+        return None
+
     # ========================================================
     # MONTO
     # ========================================================
@@ -123,10 +234,29 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
             except ValueError:
                 pass
 
+    monto_directo = extraer_monto_desde_texto(texto_combinado)
+    if datos["monto"] is None and monto_directo is not None:
+        datos["monto"] = monto_directo
+
+    # ========================================================
+    # DESTINATARIO
+    # ========================================================
+
+    destinatario_robusto = detectar_destinatario_robusto()
+    if datos["destinatario"] is None and destinatario_robusto is not None:
+        datos["destinatario"] = destinatario_robusto
+
+    if datos["destinatario"] is None:
+        for linea in lineas_combinadas:
+            if re.match(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá|enviaste)\b', linea):
+                candidato = re.sub(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá|enviaste)\s*[:\-]?\s*', '', linea).strip(' -:;*•')
+                if candidato and not texto_es_invalido_para_persona(candidato):
+                    datos["destinatario"] = candidato
+                    break
+
     # ========================================================
     # CUENTA ORIGEN
     # ========================================================
-
     for linea in lineas6:
 
         if "origen" in linea.lower():
@@ -457,6 +587,77 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
                 break
 
     # ========================================================
+    # CUENTAS Y CLABES (contexto seguro)
+    # ========================================================
+
+    if datos["cuenta_destino"] is None:
+        patron_destinatario_cercano = re.compile(
+            r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá|'
+            r'nombre\s+del\s+beneficiario)\b'
+        )
+        patron_banco_cuenta = re.compile(
+            r"(?i)^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .&'’]{1,49})\s*[-–]\s*"
+            r'(\d{10,22})$'
+        )
+        lineas_informativas = re.compile(
+            r'(?i)^\*?\s*(?:dato\s+no\s+verificado\s+por\s+esta\s+'
+            r'instituci[oó]n|en\s+proceso\s+de\s+verificaci[oó]n)\s*[.!]?\s*$'
+        )
+        etiquetas_no_cuenta = re.compile(
+            r'(?i)\b(?:referencia|folio|id\s+de\s+movimiento|'
+            r'clave\s+de\s+rastreo|fecha|hora|monto)\b'
+        )
+
+        for i, linea in enumerate(lineas_combinadas):
+            if not patron_destinatario_cercano.search(linea.strip()):
+                continue
+
+            for candidata in lineas_combinadas[i + 1:i + 4]:
+                candidata = candidata.strip()
+                if lineas_informativas.fullmatch(candidata):
+                    continue
+
+                coincidencia_cuenta = patron_banco_cuenta.fullmatch(candidata)
+                if (
+                    coincidencia_cuenta
+                    and not etiquetas_no_cuenta.search(candidata)
+                ):
+                    datos["cuenta_destino"] = coincidencia_cuenta.group(2)
+                break
+
+            if datos["cuenta_destino"] is not None:
+                break
+
+    for i, linea in enumerate(lineas_combinadas):
+        texto = linea.strip()
+        if not texto:
+            continue
+
+        if datos["cuenta_origen"] is None and re.search(r'(?i)(?:n[uú]mero\s+de\s+cuenta|cuenta\s+origen|cuenta\s+remitente|cuenta\s+ordenante)', texto):
+            cuenta = extraer_cuenta_desde_texto(texto)
+            if cuenta is not None:
+                datos["cuenta_origen"] = cuenta
+
+        if datos["cuenta_destino"] is None and i > 0:
+            previo = lineas_combinadas[i - 1].strip()
+            if re.search(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá|enviaste)\b', previo):
+                cuenta = extraer_cuenta_desde_texto(texto)
+                if cuenta is not None and not re.search(r'(?i)(?:clave\s+de\s+rastreo|id\s+de\s+movimiento|referencia|numero\s+de\s+referencia|número\s+de\s+referencia)', texto):
+                    datos["cuenta_destino"] = cuenta
+
+        if datos["cuenta_destino"] is None and re.search(r'(?i)(?:cuenta\s+destino|cuenta\s+destinatario|cuenta\s+beneficiario|clabe\s+destino)', texto):
+            cuenta = extraer_cuenta_desde_texto(texto)
+            if cuenta is None and i + 1 < len(lineas_combinadas):
+                cuenta = extraer_cuenta_desde_texto(lineas_combinadas[i + 1])
+            if cuenta is not None:
+                datos["cuenta_destino"] = cuenta
+
+        if datos["cuenta_destino"] is None and re.search(r'(?i)^[A-Z]{3,}\s*[-–]\s*\d{10,22}$', texto):
+            cuenta = extraer_cuenta_desde_texto(texto)
+            if cuenta is not None and i > 0 and re.search(r'(?i)^(?:a|para|destinatario|beneficiario|recibira|recibirá)', lineas_combinadas[i - 1]):
+                datos["cuenta_destino"] = cuenta
+
+    # ========================================================
     # COMISIÓN
     # ========================================================
 
@@ -709,10 +910,59 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
                 break
 
     # ========================================================
-    # FECHA
+    # FECHA Y HORA
     # ========================================================
 
-    texto_combinado = texto_psm6 + "\n" + texto_psm11
+    patron_fecha_hora = re.compile(
+        r'(?P<fecha>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+'
+        r'(?P<hora>\d{1,2}:\d{2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)',
+        re.IGNORECASE
+    )
+
+    coincidencia_fecha_hora = patron_fecha_hora.search(texto_combinado)
+    if coincidencia_fecha_hora and datos["fecha"] is None:
+        fecha_iso = coincidencia_fecha_hora.group('fecha')
+        hora_tex = coincidencia_fecha_hora.group('hora')
+
+        try:
+            if re.search(r'\d{4}', fecha_iso):
+                datos["fecha"] = datetime.strptime(fecha_iso, '%d/%m/%Y').strftime('%Y-%m-%d')
+            else:
+                datos["fecha"] = datetime.strptime(fecha_iso, '%d/%m/%y').strftime('%Y-%m-%d')
+        except ValueError:
+            try:
+                datos["fecha"] = datetime.strptime(fecha_iso, '%d-%m-%Y').strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+
+        if datos["hora"] is None:
+            hora_texto = hora_tex.strip().lower().replace('.', '')
+            hora_texto = re.sub(r'\s+', ' ', hora_texto)
+            hora_texto = re.sub(r'(?i)\s*(am|pm)$', '', hora_texto)
+            hora_texto = hora_texto.strip()
+
+            try:
+                if ':' in hora_texto and len(hora_texto.split(':')) == 3:
+                    hora_dt = datetime.strptime(hora_texto, '%H:%M:%S')
+                else:
+                    hora_dt = datetime.strptime(hora_texto, '%H:%M')
+                datos["hora"] = hora_dt.strftime('%H:%M:%S')
+            except ValueError:
+                try:
+                    hora_dt = datetime.strptime(hora_texto, '%I:%M')
+                    datos["hora"] = hora_dt.strftime('%H:%M:%S')
+                except ValueError:
+                    pass
+
+            if datos["hora"] is not None and re.search(r'(?i)\bpm\b', hora_tex):
+                try:
+                    hora_partes = datos["hora"].split(':')
+                    hora_int = int(hora_partes[0])
+                    if hora_int < 12:
+                        hora_int = hora_int + 12
+                        datos["hora"] = f"{hora_int:02d}:{hora_partes[1]}:{hora_partes[2]}"
+                except (ValueError, IndexError):
+                    pass
 
     fecha = re.search(
         r'\b(\d{1,2}\s+'
@@ -907,8 +1157,20 @@ def extraer_datos_transferencia(texto_psm6, texto_psm11):
                 valor
             )
             if coincidencia:
-                datos["folio"] = coincidencia.group(0)
-                break
+                candidato = coincidencia.group(0)
+                if len(candidato) >= 6 and len(candidato) <= 18 and not re.search(r'(?i)(?:cuenta|clabe|tarjeta)', valor):
+                    datos["folio"] = candidato
+                    break
+
+    if datos["folio"] is None:
+        for linea in lineas_combinadas:
+            if re.search(r'(?i)(?:n[uú]mero\s+de\s+referencia|numero\s+de\s+referencia|referencia\b|folio\b|clave\s+de\s+rastreo)', linea):
+                coincidencia = re.search(r'(?<!\d)(\d{4,})(?!\d)', linea)
+                if coincidencia:
+                    candidato = coincidencia.group(1)
+                    if len(candidato) >= 6 and len(candidato) <= 18 and not re.search(r'(?i)(?:cuenta|clabe|tarjeta)', linea):
+                        datos["folio"] = candidato
+                        break
 
     def cuenta_asociada(etiquetas):
         patron_numero = re.compile(
@@ -1226,7 +1488,33 @@ def monitorear_chats_whatsapp(page):
                 '[data-testid="cell-frame-container"]'
             )
 
-        return chats
+        conversaciones = []
+        for i in range(chats.count()):
+            fila = chats.nth(i)
+            if es_fila_conversacion(fila):
+                conversaciones.append(fila)
+
+        return conversaciones
+
+    def es_fila_conversacion(fila):
+        try:
+            testid = fila.get_attribute("data-testid") or ""
+            if not testid.startswith("list-item-"):
+                selectores_conversacion = (
+                    '[data-testid="cell-frame-title"]',
+                    '[data-testid="cell-frame-primary-detail"]',
+                    '[data-testid="cell-frame-secondary"]',
+                )
+                if not all(
+                    fila.locator(selector).count() > 0
+                    for selector in selectores_conversacion
+                ):
+                    return False
+
+            nombre = normalizar_firma_chat(obtener_nombre_chat(fila))
+            return bool(nombre) and nombre.casefold() != "archivados"
+        except Exception:
+            return False
 
     def obtener_nombre_chat(fila):
         try:
@@ -1462,7 +1750,10 @@ def monitorear_chats_whatsapp(page):
         tipo_archivo,
         mensaje_id,
         datos_extraidos,
-        archivo_comprobante=None
+        archivo_comprobante=None,
+        archivo_bytes=None,
+        archivo_nombre=None,
+        archivo_mime=None
     ):
         api_url = os.getenv("API_URL", "http://127.0.0.1:5000")
 
@@ -1481,15 +1772,48 @@ def monitorear_chats_whatsapp(page):
             "fecha_transferencia": convertir_fecha_mysql(datos_extraidos.get("fecha")),
             "hora_transferencia": convertir_hora_mysql(datos_extraidos.get("hora")),
         }
-        if archivo_comprobante is not None:
-            payload["archivo_comprobante"] = archivo_comprobante
 
         try:
-            respuesta = requests.post(
-                f"{api_url}/api/transferencias",
-                json=payload,
-                timeout=5,
-            )
+            if archivo_bytes is not None:
+                nombre_del_archivo = archivo_nombre or archivo_comprobante
+                mime_del_archivo = archivo_mime or (
+                    "application/pdf"
+                    if tipo_archivo == "PDF"
+                    else "image/jpeg"
+                )
+
+                data = {
+                    clave: valor
+                    for clave, valor in payload.items()
+                    if valor is not None
+                }
+                files = {
+                    "archivo": (
+                        nombre_del_archivo,
+                        archivo_bytes,
+                        mime_del_archivo,
+                    )
+                }
+
+                respuesta = requests.post(
+                    f"{api_url}/api/transferencias",
+                    data=data,
+                    files=files,
+                    timeout=5,
+                )
+            else:
+                if archivo_comprobante is not None:
+                    payload["archivo_comprobante"] = archivo_comprobante
+
+                respuesta = requests.post(
+                    f"{api_url}/api/transferencias",
+                    json={
+                        clave: valor
+                        for clave, valor in payload.items()
+                        if valor is not None
+                    },
+                    timeout=5,
+                )
 
             if respuesta.status_code == 201:
                 print("[API OK] Transferencia guardada correctamente")
@@ -1533,7 +1857,8 @@ def monitorear_chats_whatsapp(page):
         tipo_archivo,
         mensaje_id,
         datos_extraidos,
-        datos_originales=None
+        datos_originales=None,
+        nombre_archivo_original=None
     ):
         print()
         print("====================================")
@@ -1564,7 +1889,16 @@ def monitorear_chats_whatsapp(page):
             tipo_archivo,
             mensaje_id,
             datos_extraidos,
-            archivo_comprobante
+            archivo_comprobante=archivo_comprobante,
+            archivo_bytes=datos_originales,
+            archivo_nombre=(
+                nombre_archivo_original or archivo_comprobante
+            ),
+            archivo_mime=(
+                "application/pdf"
+                if tipo_archivo == "PDF"
+                else "image/jpeg"
+            )
         )
 
     def debug_page(page, etapa):
@@ -1802,6 +2136,9 @@ def monitorear_chats_whatsapp(page):
         mensaje_id,
         tipo_archivo
     ):
+        frames_pdf_diagnosticados = []
+        listener_frame_pdf = None
+
         try:
             visor_residual = page.locator(
                 '[data-testid="pdf-viewer-iframe"]'
@@ -1986,7 +2323,7 @@ def monitorear_chats_whatsapp(page):
                             datos_blob_visor["naturalHeight"]
                         )
 
-                def candidatos_blob(locator):
+                def candidatos_blob(locator, permitir_reutilizado=False):
                     resultado = []
                     if locator is None:
                         return resultado
@@ -1994,7 +2331,10 @@ def monitorear_chats_whatsapp(page):
                     for indice in range(locator.count()):
                         imagen = locator.nth(indice)
                         src = imagen.get_attribute("src")
-                        if not src or src in blobs_imagen_procesados:
+                        if not src or (
+                            src in blobs_imagen_procesados
+                            and not permitir_reutilizado
+                        ):
                             continue
 
                         informacion = imagen.evaluate(
@@ -2005,6 +2345,16 @@ def monitorear_chats_whatsapp(page):
                             })
                             """
                         )
+                        if (
+                            permitir_reutilizado
+                            and src in blobs_imagen_procesados
+                            and (
+                                informacion["naturalWidth"] <= 0
+                                or informacion["naturalHeight"] <= 0
+                            )
+                        ):
+                            continue
+
                         print("[BLOB CANDIDATO]")
                         print("src:", src)
                         print(
@@ -2019,7 +2369,10 @@ def monitorear_chats_whatsapp(page):
 
                     return resultado
 
-                candidatos_visores = candidatos_blob(blobs_visores)
+                candidatos_visores = candidatos_blob(
+                    blobs_visores,
+                    permitir_reutilizado=True
+                )
                 candidatos_nuevos = [
                     candidato for candidato in candidatos_visores
                     if candidato[1] in blobs_nuevos
@@ -2080,6 +2433,11 @@ def monitorear_chats_whatsapp(page):
                 print("Mensaje:", mensaje_id)
                 print("src:", src_seleccionado)
                 print("Motivo:", motivo_seleccion)
+                if (
+                    motivo_seleccion == "visor"
+                    and src_seleccionado in blobs_imagen_procesados
+                ):
+                    print("[BLOB REUTILIZADO DEL VISOR]")
                 print(
                     "naturalWidth:",
                     informacion_seleccionada["naturalWidth"]
@@ -2246,8 +2604,83 @@ def monitorear_chats_whatsapp(page):
                     )
 
                 debug_page(page, "mensaje localizado")
+
+                def diagnosticar_frame_pdf(frame):
+                    if "webtp.whatsapp.net/pdf-viewer/" not in frame.url:
+                        return
+
+                    try:
+                        frame.evaluate(
+                            """
+                            () => {
+                                if (window.__dorianPdfCaptureInstalled) {
+                                    return;
+                                }
+
+                                window.__dorianPdfOriginal = null;
+                                window.__dorianPdfMessageListener = async event => {
+                                    const data = event.data;
+                                    if (event.origin !==
+                                            'https://web.whatsapp.com'
+                                        || !data
+                                        || typeof data !== 'object') {
+                                        return;
+                                    }
+
+                                    const payload = data.payload;
+                                    const archivo = payload?.file;
+                                    if (
+                                        data.type !== 'RENDER_PDF_PREVIEW'
+                                        || !(archivo instanceof Blob)
+                                        || archivo.type !== 'application/pdf'
+                                    ) {
+                                        return;
+                                    }
+
+                                    try {
+                                        const buffer = await archivo.arrayBuffer();
+                                        const bytes = new Uint8Array(buffer);
+                                        if (
+                                            bytes.length < 4
+                                            || bytes[0] !== 0x25
+                                            || bytes[1] !== 0x50
+                                            || bytes[2] !== 0x44
+                                            || bytes[3] !== 0x46
+                                        ) {
+                                            return;
+                                        }
+
+                                        window.__dorianPdfOriginal = {
+                                            bytes: Array.from(bytes),
+                                            fileName: typeof payload.fileName
+                                                === 'string'
+                                                ? payload.fileName
+                                                : '',
+                                            type: archivo.type,
+                                            size: archivo.size
+                                        };
+                                    } catch (_) {
+                                        window.__dorianPdfOriginal = null;
+                                    }
+                                };
+                                window.addEventListener(
+                                    'message',
+                                    window.__dorianPdfMessageListener
+                                );
+                                window.__dorianPdfCaptureInstalled = true;
+                            }
+                            """
+                        )
+                        if frame not in frames_pdf_diagnosticados:
+                            frames_pdf_diagnosticados.append(frame)
+                    except Exception:
+                        return
+
+                listener_frame_pdf = diagnosticar_frame_pdf
+                page.on("framenavigated", listener_frame_pdf)
                 pdf_thumb.first.click()
                 page.wait_for_timeout(2000)
+
                 debug_page(page, "después click documento")
                 debug_page(page, "visor PDF abierto")
                 texto_mensaje = mensaje.inner_text()
@@ -2270,6 +2703,7 @@ def monitorear_chats_whatsapp(page):
 
                 if not nombre_pdf.lower().endswith(".pdf"):
                     nombre_pdf += ".pdf"
+                nombre_pdf_original = nombre_pdf
 
                 iframe_element = page.locator(
                     '[data-testid="pdf-viewer-iframe"]'
@@ -2301,6 +2735,63 @@ def monitorear_chats_whatsapp(page):
                     raise RuntimeError(
                         "No se encontró el Frame real del visor PDF."
                     )
+
+                datos_pdf = None
+                captura_postmessage = None
+                for intento in range(20):
+                    try:
+                        captura_postmessage = frame_real.evaluate(
+                            """
+                            () => {
+                                const pdf = window.__dorianPdfOriginal;
+                                if (!pdf || !Array.isArray(pdf.bytes)) {
+                                    return null;
+                                }
+                                return {
+                                    bytes: pdf.bytes,
+                                    fileName: pdf.fileName,
+                                    type: pdf.type,
+                                    size: pdf.size
+                                };
+                            }
+                            """
+                        )
+                    except Exception:
+                        captura_postmessage = None
+
+                    if captura_postmessage is not None:
+                        break
+                    page.wait_for_timeout(250)
+
+                if captura_postmessage is not None:
+                    try:
+                        bytes_pdf = bytes(captura_postmessage["bytes"])
+                    except (KeyError, TypeError, ValueError):
+                        bytes_pdf = None
+
+                    if bytes_pdf is not None and bytes_pdf.startswith(b"%PDF"):
+                        datos_pdf = bytes_pdf
+                        nombre_recibido = str(
+                            captura_postmessage.get("fileName") or ""
+                        ).strip()
+                        if nombre_recibido:
+                            nombre_recibido = os.path.basename(
+                                nombre_recibido.replace("\\", "/")
+                            )
+                            nombre_recibido = re.sub(
+                                r'[<>:"/\\|?*]',
+                                "_",
+                                nombre_recibido
+                            )
+                            if not nombre_recibido.lower().endswith(".pdf"):
+                                nombre_recibido += ".pdf"
+                            nombre_pdf_original = nombre_recibido
+                            nombre_pdf = nombre_recibido
+
+                        print("[PDF ORIGINAL CAPTURADO POR POSTMESSAGE]")
+                        print("Nombre:", nombre_pdf_original)
+                        print("Tamaño:", len(datos_pdf))
+                        print("Cabecera:", repr(datos_pdf[:12]))
 
                 blobs_capturados = []
 
@@ -2407,7 +2898,6 @@ def monitorear_chats_whatsapp(page):
                         print("[PDF BLOB ENCONTRADO]")
                         print(blob_url)
 
-                datos_pdf = None
                 paginas_png = []
 
                 for blob in blobs_capturados:
@@ -2424,16 +2914,21 @@ def monitorear_chats_whatsapp(page):
                     print("Cabecera:", repr(datos[:12]))
 
                     if datos.startswith(b"%PDF"):
-                        datos_pdf = datos
-                        print("[PDF REAL CAPTURADO]")
-                        print("Tamaño:", len(datos_pdf))
-                        print("Cabecera:", repr(datos_pdf[:12]))
+                        if datos_pdf is None:
+                            datos_pdf = datos
+                            print("[PDF REAL CAPTURADO]")
+                            print("Tamaño:", len(datos_pdf))
+                            print("Cabecera:", repr(datos_pdf[:12]))
                         break
 
                     if datos.startswith(b"\x89PNG\r\n\x1a\n"):
                         paginas_png.append(datos)
 
                 if datos_pdf is None:
+                    print("[PDF ORIGINAL NO CAPTURADO]")
+                    print(
+                        "Se continuará con páginas renderizadas para OCR."
+                    )
                     if paginas_png:
                         texto_psm6_paginas = []
                         texto_psm11_paginas = []
@@ -2692,7 +3187,8 @@ def monitorear_chats_whatsapp(page):
                     tipo_archivo,
                     mensaje_id,
                     datos_extraidos,
-                    datos_pdf
+                    datos_pdf,
+                    nombre_archivo_original=nombre_pdf_original
                 )
                 cerrar_visor_pdf(page)
                 debug_page(page, "después cerrar visor")
@@ -2705,6 +3201,31 @@ def monitorear_chats_whatsapp(page):
             cerrar_visor_pdf(page)
             debug_page(page, "después cerrar visor")
         finally:
+            if listener_frame_pdf is not None:
+                page.remove_listener(
+                    "framenavigated",
+                    listener_frame_pdf
+                )
+            for frame in frames_pdf_diagnosticados:
+                try:
+                    frame.evaluate(
+                        """
+                        () => {
+                            if (window.__dorianPdfMessageListener) {
+                                window.removeEventListener(
+                                    'message',
+                                    window.__dorianPdfMessageListener
+                                );
+                                delete window.__dorianPdfMessageListener;
+                            }
+                            delete window.__dorianPdfOriginal;
+                            delete window.__dorianPdfCaptureInstalled;
+                        }
+                        """
+                    )
+                except Exception:
+                    pass
+
             if tipo_archivo == "PDF":
                 cerrado = cerrar_visor_pdf(page)
                 if not cerrado:
@@ -3876,13 +4397,10 @@ def monitorear_chats_whatsapp(page):
     snapshot_chats = {}
     orden_anterior = []
 
-    chats = page.locator(
-        '[data-testid="cell-frame-container"]'
-    )
+    chats = obtener_chats()
 
-    for i in range(chats.count()):
+    for fila in chats:
         try:
-            fila = chats.nth(i)
             nombre = nombre_visible(fila)
             snapshot = obtener_snapshot(fila)
             estado_chats[nombre] = snapshot
@@ -3892,12 +4410,9 @@ def monitorear_chats_whatsapp(page):
             continue
 
     def localizar_fila_por_nombre(nombre_buscado):
-        filas_actuales = page.locator(
-            '[data-testid="cell-frame-container"]'
-        )
+        filas_actuales = obtener_chats()
 
-        for i in range(filas_actuales.count()):
-            fila = filas_actuales.nth(i)
+        for fila in filas_actuales:
             nombre_fila = obtener_nombre_chat(fila)
 
             if (
@@ -3920,26 +4435,28 @@ def monitorear_chats_whatsapp(page):
         return True
 
     def guardar_chat_pendiente(chat_no_leido, motivo):
-        chats_pendientes[chat_no_leido["nombre"]] = {
+        nombre = normalizar_firma_chat(chat_no_leido.get("nombre"))
+        if not nombre or nombre.casefold() == "archivados":
+            chats_pendientes.pop(nombre, None)
+            return
+
+        chats_pendientes[nombre] = {
             "firma": chat_no_leido["firma"],
             "preview": chat_no_leido.get("preview"),
             "unread_count": chat_no_leido["unread_count"],
         }
         print(
             "[PENDIENTE] Chat conservado para reintento:",
-            chat_no_leido["nombre"],
+            nombre,
             "| motivo:",
             motivo
         )
 
     def revisar_no_leidos_iniciales():
-        filas_iniciales = page.locator(
-            '[data-testid="cell-frame-container"]'
-        )
+        filas_iniciales = obtener_chats()
         no_leidos = []
 
-        for i in range(filas_iniciales.count()):
-            fila = filas_iniciales.nth(i)
+        for fila in filas_iniciales:
             nombre_chat = obtener_nombre_chat(fila)
             indicador = fila.locator(
                 '[data-testid="icon-unread-count"]'
@@ -3947,7 +4464,6 @@ def monitorear_chats_whatsapp(page):
 
             if (
                 not nombre_chat
-                or nombre_chat.lower() == "archivados"
                 or indicador.count() == 0
                 or not indicador.first.is_visible()
             ):
@@ -3982,7 +4498,7 @@ def monitorear_chats_whatsapp(page):
         print("====================================")
         print("REVISIÓN INICIAL")
         print("====================================")
-        print("Chats visibles:", filas_iniciales.count())
+        print("Chats visibles:", len(filas_iniciales))
         print("Chats con mensajes no leídos:", len(no_leidos))
 
         archivos_procesados = 0
@@ -4010,9 +4526,6 @@ def monitorear_chats_whatsapp(page):
                     chat_no_leido,
                     "fila no disponible"
                 )
-                continue
-
-            if nombre.lower() == "archivados":
                 continue
 
             nombre_encontrado = obtener_nombre_chat(fila)
@@ -4086,12 +4599,9 @@ def monitorear_chats_whatsapp(page):
         print("====================================")
 
     def diagnosticar_titulos_no_leidos():
-        filas = page.locator(
-            '[data-testid="cell-frame-container"]'
-        )
+        filas = obtener_chats()
 
-        for i in range(filas.count()):
-            fila = filas.nth(i)
+        for fila in filas:
             indicador = fila.locator(
                 '[data-testid="icon-unread-count"]'
             )
@@ -4181,19 +4691,16 @@ def monitorear_chats_whatsapp(page):
     def monitor_whatsapp():
         estado_chats.clear()
         estado_no_leidos.clear()
-        filas_actuales = page.locator(
-            '[data-testid="cell-frame-container"]'
-        )
+        filas_actuales = obtener_chats()
 
-        for i in range(filas_actuales.count()):
-            fila = filas_actuales.nth(i)
+        for fila in filas_actuales:
             snapshot = obtener_snapshot(fila)
             estado_chats[snapshot["nombre"]] = firma_monitor(snapshot)
             estado_no_leidos[snapshot["nombre"]] = contador_no_leidos(
                 snapshot
             )
 
-        print("Chats visibles:", filas_actuales.count())
+        print("Chats visibles:", len(filas_actuales))
         print("Estado inicial preparado.")
 
         print("====================================")
@@ -4206,6 +4713,10 @@ def monitorear_chats_whatsapp(page):
 
         def reintentar_chats_pendientes():
             for nombre, pendiente in list(chats_pendientes.items()):
+                if not nombre or nombre.casefold() == "archivados":
+                    chats_pendientes.pop(nombre, None)
+                    continue
+
                 fila = localizar_fila_por_nombre(nombre)
                 if fila is None:
                     continue
@@ -4256,13 +4767,10 @@ def monitorear_chats_whatsapp(page):
 
                 reintentar_chats_pendientes()
 
-                filas = page.locator(
-                    '[data-testid="cell-frame-container"]'
-                )
+                filas = obtener_chats()
 
-                for i in range(filas.count()):
+                for fila in filas:
                     try:
-                        fila = filas.nth(i)
                         snapshot = obtener_snapshot(fila)
                     except PlaywrightTimeoutError:
                         continue
@@ -4382,7 +4890,7 @@ def monitorear_chats_whatsapp(page):
 
                 print(
                     "[MONITOR] activo | chats visibles:",
-                    filas.count()
+                    len(filas)
                 )
                 time.sleep(1)
 
@@ -4412,15 +4920,12 @@ def monitorear_chats_whatsapp(page):
 
     def preparar_baselines_iniciales():
         nombres_visibles = []
-        filas = page.locator(
-            '[data-testid="cell-frame-container"]'
-        )
+        filas = obtener_chats()
 
-        for i in range(filas.count()):
-            nombre = obtener_nombre_chat(filas.nth(i))
+        for fila in filas:
+            nombre = obtener_nombre_chat(fila)
             if (
                 nombre
-                and nombre.lower() != "archivados"
                 and nombre not in nombres_visibles
             ):
                 nombres_visibles.append(nombre)
@@ -4476,13 +4981,10 @@ def monitorear_chats_whatsapp(page):
     # DEBUG TEMPORAL: observar únicamente snapshots estructurados de filas.
     while True:
         try:
-            chats = page.locator(
-                '[data-testid="cell-frame-container"]'
-            )
+            chats = obtener_chats()
 
-            for i in range(chats.count()):
+            for fila in chats:
                 try:
-                    fila = chats.nth(i)
                     snapshot = obtener_snapshot(fila)
                     nombre = snapshot["nombre"]
 
@@ -4542,16 +5044,13 @@ def monitorear_chats_whatsapp(page):
     while True:
         try:
             # DEBUG TEMPORAL: consultar las filas desde cero en cada ciclo.
-            chats = page.locator(
-                '[data-testid="cell-frame-container"]'
-            )
+            chats = obtener_chats()
 
             snapshot_actual = {}
             orden_actual = []
 
-            for i in range(chats.count()):
+            for fila in chats:
                 try:
-                    fila = chats.nth(i)
                     nombre = nombre_visible(fila)
                     snapshot = obtener_snapshot(fila)
                     firma_actual = normalizar_firma_chat(

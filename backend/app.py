@@ -1,4 +1,5 @@
 import os
+import re
 from decimal import Decimal, InvalidOperation
 from datetime import timedelta
 
@@ -7,6 +8,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from mysql.connector import Error
 from dotenv import load_dotenv
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
@@ -200,6 +202,61 @@ def _serializar_hora_mysql(valor):
     return str(valor)
 
 
+def _normalizar_form_value(valor):
+    if valor is None:
+        return None
+
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if texto == "" or texto.lower() == "none":
+            return None
+        return texto
+
+    return valor
+
+
+def _armar_payload_transferencia():
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        return payload, request.files.get("archivo")
+
+    payload = {}
+    for clave, valor in request.form.items():
+        payload[clave] = _normalizar_form_value(valor)
+
+    archivo = request.files.get("archivo")
+    return payload, archivo
+
+
+def _guardar_archivo_comprobante_servidor(mensaje_whatsapp_id, archivo):
+    if archivo is None:
+        return None
+
+    nombre_original = getattr(archivo, "filename", "") or ""
+    nombre_seguro = secure_filename(nombre_original)
+    if not nombre_seguro:
+        return None
+
+    extension = os.path.splitext(nombre_seguro)[1].lower()
+    extensiones_permitidas = {".jpg", ".jpeg", ".png", ".pdf"}
+    if extension not in extensiones_permitidas:
+        return None
+
+    mensaje_seguro = secure_filename(str(mensaje_whatsapp_id or "comprobante"))
+    if not mensaje_seguro:
+        mensaje_seguro = "comprobante"
+
+    nombre_final = f"{mensaje_seguro}{extension}"
+    directorio_originales = os.path.join(COMPROBANTES_PATH, "originales")
+    os.makedirs(directorio_originales, exist_ok=True)
+
+    ruta_final = os.path.join(directorio_originales, nombre_final)
+    archivo.save(ruta_final)
+    return nombre_final
+
+
 def _folio_utilizable(valor):
     if valor is None:
         return None
@@ -213,6 +270,49 @@ def _folio_utilizable(valor):
         return None
 
     return folio
+
+
+def _normalizar_hora_para_comparar(valor):
+    if valor is None:
+        return None
+
+    if isinstance(valor, timedelta):
+        total_microsegundos = (
+            (valor.days * 86400 + valor.seconds) * 1_000_000
+            + valor.microseconds
+        )
+        signo = "-" if total_microsegundos < 0 else ""
+        total_segundos, microsegundos = divmod(
+            abs(total_microsegundos),
+            1_000_000
+        )
+        horas, resto = divmod(total_segundos, 3600)
+        minutos, segundos = divmod(resto, 60)
+        fraccion = (
+            f".{microsegundos:06d}".rstrip("0")
+            if microsegundos
+            else ""
+        )
+        return f"{signo}{horas:02d}:{minutos:02d}:{segundos:02d}{fraccion}"
+
+    texto = str(valor).strip()
+    coincidencia = re.fullmatch(
+        r"(?P<signo>-?)(?P<horas>\d+):(?P<minutos>\d{1,2}):"
+        r"(?P<segundos>\d{1,2})(?:\.(?P<fraccion>\d+))?",
+        texto
+    )
+    if coincidencia is None:
+        return texto
+
+    fraccion = (coincidencia.group("fraccion") or "").rstrip("0")
+    sufijo_fraccion = f".{fraccion}" if fraccion else ""
+    return (
+        f"{coincidencia.group('signo')}"
+        f"{int(coincidencia.group('horas')):02d}:"
+        f"{int(coincidencia.group('minutos')):02d}:"
+        f"{int(coincidencia.group('segundos')):02d}"
+        f"{sufijo_fraccion}"
+    )
 
 
 def _buscar_transferencia_duplicada(cursor, payload):
@@ -272,6 +372,11 @@ def _buscar_transferencia_duplicada(cursor, payload):
                             )
                         except (InvalidOperation, ValueError):
                             valores_iguales = str(nuevo) == str(anterior)
+                    elif campo == "hora_transferencia":
+                        valores_iguales = (
+                            _normalizar_hora_para_comparar(nuevo)
+                            == _normalizar_hora_para_comparar(anterior)
+                        )
                     else:
                         valores_iguales = str(nuevo) == str(anterior)
 
@@ -626,7 +731,7 @@ def eliminar_transferencia(id_transferencia):
 
 @app.post("/api/transferencias")
 def registrar_transferencia():
-    payload = request.get_json(silent=True) or {}
+    payload, archivo = _armar_payload_transferencia()
 
     campos_obligatorios = [
         "mensaje_whatsapp_id",
@@ -664,25 +769,10 @@ def registrar_transferencia():
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
-    valores = (
-        payload.get("mensaje_whatsapp_id"),
-        payload.get("chat"),
-        payload.get("tipo_archivo"),
-        payload.get("monto"),
-        payload.get("destinatario"),
-        payload.get("cuenta_destino"),
-        payload.get("cuenta_origen"),
-        payload.get("comision"),
-        payload.get("concepto"),
-        payload.get("tipo_operacion"),
-        payload.get("folio"),
-        payload.get("fecha_transferencia"),
-        payload.get("hora_transferencia"),
-        payload.get("archivo_comprobante"),
-    )
-
     connection = None
     cursor = None
+    archivo_guardado = None
+    ruta_archivo_guardado = None
 
     try:
         connection = get_db_connection()
@@ -697,6 +787,42 @@ def registrar_transferencia():
                 **duplicado,
             }), 409
 
+        if archivo is not None and getattr(archivo, "filename", None):
+            nombre_archivo = _guardar_archivo_comprobante_servidor(
+                payload.get("mensaje_whatsapp_id"),
+                archivo,
+            )
+            if nombre_archivo is None:
+                return jsonify({
+                    "success": False,
+                    "error": "Archivo no permitido o inválido",
+                }), 400
+
+            ruta_archivo_guardado = os.path.join(
+                COMPROBANTES_PATH,
+                "originales",
+                nombre_archivo,
+            )
+            archivo_guardado = nombre_archivo
+            payload["archivo_comprobante"] = nombre_archivo
+
+        valores = (
+            payload.get("mensaje_whatsapp_id"),
+            payload.get("chat"),
+            payload.get("tipo_archivo"),
+            payload.get("monto"),
+            payload.get("destinatario"),
+            payload.get("cuenta_destino"),
+            payload.get("cuenta_origen"),
+            payload.get("comision"),
+            payload.get("concepto"),
+            payload.get("tipo_operacion"),
+            payload.get("folio"),
+            payload.get("fecha_transferencia"),
+            payload.get("hora_transferencia"),
+            payload.get("archivo_comprobante"),
+        )
+
         cursor.execute(sql, valores)
         connection.commit()
 
@@ -709,6 +835,11 @@ def registrar_transferencia():
     except mysql.connector.IntegrityError as error:
         if connection is not None:
             connection.rollback()
+        if archivo_guardado is not None and ruta_archivo_guardado and os.path.exists(ruta_archivo_guardado):
+            try:
+                os.remove(ruta_archivo_guardado)
+            except OSError:
+                pass
         mensaje = str(error)
         if "Duplicate entry" in mensaje or "UNIQUE" in mensaje:
             return jsonify({
@@ -726,10 +857,25 @@ def registrar_transferencia():
     except Error as error:
         if connection is not None:
             connection.rollback()
+        if archivo_guardado is not None and ruta_archivo_guardado and os.path.exists(ruta_archivo_guardado):
+            try:
+                os.remove(ruta_archivo_guardado)
+            except OSError:
+                pass
         return jsonify({
             "success": False,
             "error": f"Error de MySQL: {error}",
         }), 500
+
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        if archivo_guardado is not None and ruta_archivo_guardado and os.path.exists(ruta_archivo_guardado):
+            try:
+                os.remove(ruta_archivo_guardado)
+            except OSError:
+                pass
+        raise
 
     finally:
         if cursor is not None:
