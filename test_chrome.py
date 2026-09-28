@@ -14,6 +14,7 @@ import pymupdf
 import requests
 from dotenv import load_dotenv
 from PIL import Image, ImageEnhance, ImageFilter
+from resumen_ventas.resumen_scheduler import verificar_resumen_programado
 
 load_dotenv()
 
@@ -4764,6 +4765,11 @@ def monitorear_chats_whatsapp(page):
                         "fue cerrada."
                     )
                     break
+
+                try:
+                    verificar_resumen_programado(page)
+                except Exception as error:
+                    print(f"[VENTAS] Error del scheduler: {error}")
 
                 reintentar_chats_pendientes()
 
