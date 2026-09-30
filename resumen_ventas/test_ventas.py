@@ -1,51 +1,49 @@
-import os
-from pathlib import Path
+from datetime import date
 
-import mysql.connector
-from dotenv import load_dotenv
 from mysql.connector import Error
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+from resumen_ventas.ventas_service import get_db_connection, obtener_resumen_ventas
 
 
 def main():
     connection = None
-    cursor = None
 
     try:
-        connection = mysql.connector.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=int(os.getenv("DB_PORT", "3306")),
-            user=os.getenv("DB_USER", "root"),
-            password=os.getenv("DB_PASSWORD", "root"),
-            database=os.getenv("DB_NAME", "dorian_automatizacion"),
-            autocommit=False,
-        )
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT CURRENT_DATE(), COUNT(*), COALESCE(SUM(monto), 0)
-            FROM ventas
-            WHERE fecha_venta >= CURRENT_DATE()
-              AND fecha_venta < CURRENT_DATE() + INTERVAL 1 DAY
-              AND estado = %s
-            """,
-            ("COMPLETADA",),
-        )
-        fecha, cantidad_ventas, total_vendido = cursor.fetchone()
+        connection = get_db_connection()
+        resumen = obtener_resumen_ventas(connection, date(2026, 9, 14))
 
         print("RESUMEN DE VENTAS")
-        print(f"Fecha: {fecha:%d/%m/%Y}")
-        print(f"Ventas realizadas: {cantidad_ventas}")
-        print(f"Total vendido: ${total_vendido:,.2f}")
+        print(f"Fecha: {resumen['fecha']:%d/%m/%Y}")
+        print(f"Ventas no apartado: {resumen['cantidad_no_apartado']}")
+        print(f"Total no apartado: ${resumen['total_no_apartado']:,.2f}")
+        print(f"Apartados: {resumen['cantidad_apartados']}")
+        print(f"Total apartados: ${resumen['total_apartados']:,.2f}")
+        print(f"Ventas realizadas: {resumen['cantidad_ventas']}")
+        print(f"Total vendido: ${resumen['total_vendido']:,.2f}")
+
+        valores_esperados = {
+            "cantidad_no_apartado": 45,
+            "total_no_apartado": 348397,
+            "cantidad_apartados": 3,
+            "total_apartados": 22883,
+            "cantidad_ventas": 48,
+            "total_vendido": 371280,
+        }
+        diferencias = {
+            clave: (esperado, resumen[clave])
+            for clave, esperado in valores_esperados.items()
+            if resumen[clave] != esperado
+        }
+        if diferencias:
+            print("PRUEBA INCORRECTA: hay valores que no coinciden.")
+            for clave, (esperado, obtenido) in diferencias.items():
+                print(f"{clave}: esperado {esperado}, obtenido {obtenido}")
+        else:
+            print("PRUEBA CORRECTA: coincide con la consulta validada del ingeniero.")
 
     except Error as error:
         print(f"Error de MySQL: {error}")
     finally:
-        if cursor is not None:
-            cursor.close()
         if connection is not None and connection.is_connected():
             connection.close()
 

@@ -1,5 +1,9 @@
+import json
+import os
+import tempfile
 import time as monotonic
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from .settings import (
     CHAT_DESTINO,
@@ -16,143 +20,139 @@ from .whatsapp_sender import enviar_resumen_whatsapp
 _ultima_comprobacion_por_horario = {}
 _ultimo_log_error = 0.0
 _estados_finales = set()
+_ARCHIVO_ESTADO = Path(__file__).with_name("estado_envios.json")
 
 
-def _leer_y_reservar_envio(horario):
-    connection = get_db_connection()
-    cursor = None
+def _leer_estados_envio():
     try:
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT id_envio, estado, intentos,
-                   TIMESTAMPDIFF(SECOND, fecha_intento, NOW())
-                       AS segundos_desde_intento
-            FROM envios_resumen_ventas
-            WHERE fecha = CURRENT_DATE()
-              AND horario = %s
-              AND chat_destino = %s
-            LIMIT 1
-            """,
-            (horario.strftime("%H:%M:%S"), CHAT_DESTINO),
-        )
-        registro = cursor.fetchone()
+        with _ARCHIVO_ESTADO.open("r", encoding="utf-8") as archivo:
+            estados = json.load(archivo)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(estados, dict):
+        raise ValueError("El archivo de estados de envíos no contiene un objeto JSON.")
+    return estados
 
-        if registro and registro["estado"] == "ENVIADO":
-            return "enviado", None
-        if registro and registro["estado"] == "EN_PROCESO":
-            return "en_proceso", None
-        if registro and registro["intentos"] >= MAX_INTENTOS_ENVIO:
-            return "max_intentos", None
+
+def _guardar_estados_envio(estados):
+    archivo_temporal = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=_ARCHIVO_ESTADO.parent,
+            prefix="estado_envios_",
+            suffix=".tmp",
+            delete=False,
+        ) as archivo:
+            archivo_temporal = Path(archivo.name)
+            json.dump(estados, archivo, ensure_ascii=False, indent=2)
+            archivo.flush()
+            os.fsync(archivo.fileno())
+        os.replace(archivo_temporal, _ARCHIVO_ESTADO)
+    finally:
+        if archivo_temporal is not None and archivo_temporal.exists():
+            archivo_temporal.unlink()
+
+
+def _clave_envio(fecha, horario):
+    return json.dumps(
+        (fecha.isoformat(), horario.strftime("%H:%M:%S"), CHAT_DESTINO),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _actualizar_estado(clave, fecha, horario, estado, intentos, fecha_intento):
+    estados = _leer_estados_envio()
+    estados[clave] = {
+        "fecha": fecha.isoformat(),
+        "horario": horario.strftime("%H:%M:%S"),
+        "chat_destino": CHAT_DESTINO,
+        "estado": estado,
+        "intentos": intentos,
+        "fecha_intento": fecha_intento.isoformat(),
+    }
+    _guardar_estados_envio(estados)
+
+
+def _leer_y_reservar_envio(horario, fecha):
+    ahora = datetime.now()
+    clave = _clave_envio(fecha, horario)
+    estados = _leer_estados_envio()
+    registro = estados.get(clave)
+
+    if registro:
+        if registro["estado"] == "ENVIADO":
+            return "enviado", clave
+        if registro["estado"] == "ENVIO_AMBIGUO":
+            return "ambiguo", clave
+        if registro["estado"] not in ("EN_PROCESO", "ERROR"):
+            return "en_proceso", clave
+
+        intentos = registro["intentos"]
+        if intentos >= MAX_INTENTOS_ENVIO:
+            return "max_intentos", clave
+        fecha_intento = datetime.fromisoformat(registro["fecha_intento"])
         if (
-            registro
-            and registro["segundos_desde_intento"]
+            (ahora - fecha_intento).total_seconds()
             < INTERVALO_REINTENTO_SEGUNDOS
         ):
-            return "esperar_reintento", None
+            if registro["estado"] == "EN_PROCESO":
+                return "en_proceso", clave
+            return "esperar_reintento", clave
+    else:
+        intentos = 0
 
-        resumen = obtener_resumen_ventas(connection)
-        if registro:
-            cursor.execute(
-                """
-                UPDATE envios_resumen_ventas
-                SET cantidad_ventas = %s,
-                    total_vendido = %s,
-                    mensaje = %s,
-                    estado = 'EN_PROCESO',
-                    intentos = intentos + 1,
-                    fecha_intento = NOW(),
-                    fecha_envio = NULL
-                WHERE id_envio = %s
-                  AND estado = 'ERROR'
-                  AND intentos < %s
-                """,
-                (
-                    resumen["cantidad_ventas"],
-                    resumen["total_vendido"],
-                    resumen["mensaje"],
-                    registro["id_envio"],
-                    MAX_INTENTOS_ENVIO,
-                ),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                return "ocupado", None
-            envio_id = registro["id_envio"]
-        else:
-            cursor.execute(
-                """
-                INSERT INTO envios_resumen_ventas (
-                    fecha, horario, chat_destino, cantidad_ventas,
-                    total_vendido, mensaje, estado, intentos, fecha_intento
-                )
-                VALUES (
-                    CURRENT_DATE(), %s, %s, %s, %s, %s,
-                    'EN_PROCESO', 1, NOW()
-                )
-                """,
-                (
-                    horario.strftime("%H:%M:%S"),
-                    CHAT_DESTINO,
-                    resumen["cantidad_ventas"],
-                    resumen["total_vendido"],
-                    resumen["mensaje"],
-                ),
-            )
-            envio_id = cursor.lastrowid
-
-        connection.commit()
-        return "reservado", (envio_id, resumen)
-    finally:
-        if cursor is not None:
-            cursor.close()
-        if connection.is_connected():
-            connection.close()
+    intentos += 1
+    _actualizar_estado(
+        clave,
+        fecha,
+        horario,
+        "EN_PROCESO",
+        intentos,
+        ahora,
+    )
+    return "reservado", clave
 
 
-def _guardar_resultado(envio_id, enviado):
+def _consultar_resumen_ventas():
     connection = get_db_connection()
-    cursor = None
     try:
-        cursor = connection.cursor()
-        estado = "ENVIADO" if enviado else "ERROR"
-        cursor.execute(
-            """
-            UPDATE envios_resumen_ventas
-            SET estado = %s,
-                fecha_envio = CASE
-                    WHEN %s = 'ENVIADO' THEN NOW()
-                    ELSE NULL
-                END
-            WHERE id_envio = %s AND estado = 'EN_PROCESO'
-            """,
-            (estado, estado, envio_id),
-        )
-        if cursor.rowcount != 1:
-            raise RuntimeError("No se pudo actualizar el estado del envío.")
-        connection.commit()
+        return obtener_resumen_ventas(connection)
     finally:
-        if cursor is not None:
-            cursor.close()
-        if connection.is_connected():
-            connection.close()
+        connection.close()
 
 
-def _registrar_error(envio_id):
-    if envio_id is None:
+def _registrar_estado(clave, fecha, horario, estado):
+    estados = _leer_estados_envio()
+    registro = estados[clave]
+    _actualizar_estado(
+        clave,
+        fecha,
+        horario,
+        estado,
+        registro["intentos"],
+        datetime.fromisoformat(registro["fecha_intento"]),
+    )
+
+
+def _registrar_error(clave, fecha, horario):
+    if clave is None:
         return
     try:
-        _guardar_resultado(envio_id, False)
-        print("[VENTAS] Registro ERROR guardado")
+        _registrar_estado(clave, fecha, horario, "ERROR")
+        print("[VENTAS] Registro ERROR guardado localmente")
     except Exception as error:
         print(f"[VENTAS] No se pudo guardar estado ERROR: {error}")
 
 
 def _procesar_horario(page, horario, fecha, tick, clave):
     global _ultimo_log_error
-    envio_id = None
+    clave_envio = None
+    envio_iniciado = False
     try:
-        accion, reserva = _leer_y_reservar_envio(horario)
+        accion, clave_envio = _leer_y_reservar_envio(horario, fecha)
         if accion == "enviado":
             if clave not in _estados_finales:
                 print(
@@ -161,18 +161,23 @@ def _procesar_horario(page, horario, fecha, tick, clave):
                 )
                 _estados_finales.add(clave)
             return
-        if accion in ("en_proceso", "max_intentos"):
+        if accion in ("en_proceso", "ambiguo", "max_intentos"):
             if accion == "max_intentos":
                 print(
                     "[VENTAS] Reintentos agotados para el resumen "
                     f"{horario:%H:%M}"
+                )
+            elif accion == "ambiguo":
+                print(
+                    "[VENTAS] Envío ambiguo previamente registrado para "
+                    f"{horario:%H:%M}; no se reintentará"
                 )
             _estados_finales.add(clave)
             return
         if accion != "reservado":
             return
 
-        envio_id, resumen = reserva
+        resumen = _consultar_resumen_ventas()
         print(
             "[VENTAS] Corresponde enviar resumen de las "
             f"{horario:%H:%M}"
@@ -185,38 +190,46 @@ def _procesar_horario(page, horario, fecha, tick, clave):
         )
 
         try:
+            envio_iniciado = True
             enviado = enviar_resumen_whatsapp(page, resumen["mensaje"])
         except Exception as error:
-            _registrar_error(envio_id)
+            _registrar_error(clave_envio, fecha, horario)
             print(f"[VENTAS] Error de envío: {error}")
             print("[VENTAS] Regresando al monitor de comprobantes")
             return
 
         if enviado is None:
+            _registrar_estado(
+                clave_envio,
+                fecha,
+                horario,
+                "ENVIO_AMBIGUO",
+            )
             _estados_finales.add(clave)
             print(
                 "[VENTAS] Envío ambiguo después del clic; "
-                "registro permanece EN_PROCESO, sin reintento"
+                "estado local guardado, sin reintento"
             )
             print("[VENTAS] Regresando al monitor de comprobantes")
             return
 
         try:
-            _guardar_resultado(envio_id, enviado)
-            if enviado:
+            estado = "ENVIADO" if enviado is True else "ERROR"
+            _registrar_estado(clave_envio, fecha, horario, estado)
+            if enviado is True:
                 print("[VENTAS] Resumen enviado y verificado")
-                print("[VENTAS] Registro de envío guardado")
+                print("[VENTAS] Estado ENVIADO guardado localmente")
                 _estados_finales.add(clave)
             else:
                 print("[VENTAS] No se confirmó el envío del resumen")
-                print("[VENTAS] Registro ERROR guardado")
+                print("[VENTAS] Registro ERROR guardado localmente")
         except Exception as error:
             print(f"[VENTAS] Error al guardar resultado: {error}")
         finally:
             print("[VENTAS] Regresando al monitor de comprobantes")
     except Exception as error:
-        if envio_id is not None:
-            _registrar_error(envio_id)
+        if clave_envio is not None and not envio_iniciado:
+            _registrar_error(clave_envio, fecha, horario)
         if tick - _ultimo_log_error >= 60:
             print(f"[VENTAS] Error del resumen programado: {error}")
             _ultimo_log_error = tick
