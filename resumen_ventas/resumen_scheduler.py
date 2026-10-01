@@ -2,11 +2,12 @@ import json
 import os
 import tempfile
 import time as monotonic
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .settings import (
     CHAT_DESTINO,
+    FECHA_PRUEBA_VENTAS,
     HORARIOS_RESUMEN,
     INTERVALO_COMPROBACION_SEGUNDOS,
     INTERVALO_REINTENTO_SEGUNDOS,
@@ -119,7 +120,15 @@ def _leer_y_reservar_envio(horario, fecha):
 def _consultar_resumen_ventas():
     connection = get_db_connection()
     try:
-        return obtener_resumen_ventas(connection)
+        fecha_consulta = (
+            date.fromisoformat(FECHA_PRUEBA_VENTAS)
+            if FECHA_PRUEBA_VENTAS is not None
+            else None
+        )
+        return obtener_resumen_ventas(
+            connection,
+            fecha_consulta=fecha_consulta,
+        )
     finally:
         connection.close()
 
