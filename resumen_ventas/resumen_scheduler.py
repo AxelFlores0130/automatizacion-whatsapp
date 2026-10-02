@@ -2,11 +2,11 @@ import json
 import os
 import tempfile
 import time as monotonic
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+from . import app_config
 from .settings import (
-    CHAT_DESTINO,
     FECHA_PRUEBA_VENTAS,
     HORARIOS_RESUMEN,
     INTERVALO_COMPROBACION_SEGUNDOS,
@@ -56,20 +56,28 @@ def _guardar_estados_envio(estados):
             archivo_temporal.unlink()
 
 
-def _clave_envio(fecha, horario):
+def _clave_envio(fecha, horario, chat_destino):
     return json.dumps(
-        (fecha.isoformat(), horario.strftime("%H:%M:%S"), CHAT_DESTINO),
+        (fecha.isoformat(), horario.strftime("%H:%M:%S"), chat_destino),
         ensure_ascii=False,
         separators=(",", ":"),
     )
 
 
-def _actualizar_estado(clave, fecha, horario, estado, intentos, fecha_intento):
+def _actualizar_estado(
+    clave,
+    fecha,
+    horario,
+    chat_destino,
+    estado,
+    intentos,
+    fecha_intento,
+):
     estados = _leer_estados_envio()
     estados[clave] = {
         "fecha": fecha.isoformat(),
         "horario": horario.strftime("%H:%M:%S"),
-        "chat_destino": CHAT_DESTINO,
+        "chat_destino": chat_destino,
         "estado": estado,
         "intentos": intentos,
         "fecha_intento": fecha_intento.isoformat(),
@@ -77,9 +85,9 @@ def _actualizar_estado(clave, fecha, horario, estado, intentos, fecha_intento):
     _guardar_estados_envio(estados)
 
 
-def _leer_y_reservar_envio(horario, fecha):
+def _leer_y_reservar_envio(horario, fecha, chat_destino):
     ahora = datetime.now()
-    clave = _clave_envio(fecha, horario)
+    clave = _clave_envio(fecha, horario, chat_destino)
     estados = _leer_estados_envio()
     registro = estados.get(clave)
 
@@ -110,6 +118,7 @@ def _leer_y_reservar_envio(horario, fecha):
         clave,
         fecha,
         horario,
+        chat_destino,
         "EN_PROCESO",
         intentos,
         ahora,
@@ -133,35 +142,53 @@ def _consultar_resumen_ventas():
         connection.close()
 
 
-def _registrar_estado(clave, fecha, horario, estado):
+def _configuracion_operativa_efectiva():
+    config = app_config.load_config()
+    if config is None:
+        return (
+            app_config.DEFAULT_CHAT_DESTINO,
+            tuple(HORARIOS_RESUMEN),
+        )
+    return (
+        config["chat_destino"],
+        tuple(time.fromisoformat(horario) for horario in config["horarios_envio"]),
+    )
+
+
+def _registrar_estado(clave, fecha, horario, chat_destino, estado):
     estados = _leer_estados_envio()
     registro = estados[clave]
     _actualizar_estado(
         clave,
         fecha,
         horario,
+        chat_destino,
         estado,
         registro["intentos"],
         datetime.fromisoformat(registro["fecha_intento"]),
     )
 
 
-def _registrar_error(clave, fecha, horario):
+def _registrar_error(clave, fecha, horario, chat_destino):
     if clave is None:
         return
     try:
-        _registrar_estado(clave, fecha, horario, "ERROR")
+        _registrar_estado(clave, fecha, horario, chat_destino, "ERROR")
         print("[VENTAS] Registro ERROR guardado localmente")
     except Exception as error:
         print(f"[VENTAS] No se pudo guardar estado ERROR: {error}")
 
 
-def _procesar_horario(page, horario, fecha, tick, clave):
+def _procesar_horario(page, horario, fecha, tick, clave, chat_destino):
     global _ultimo_log_error
     clave_envio = None
     envio_iniciado = False
     try:
-        accion, clave_envio = _leer_y_reservar_envio(horario, fecha)
+        accion, clave_envio = _leer_y_reservar_envio(
+            horario,
+            fecha,
+            chat_destino,
+        )
         if accion == "enviado":
             if clave not in _estados_finales:
                 print(
@@ -200,9 +227,13 @@ def _procesar_horario(page, horario, fecha, tick, clave):
 
         try:
             envio_iniciado = True
-            enviado = enviar_resumen_whatsapp(page, resumen["mensaje"])
+            enviado = enviar_resumen_whatsapp(
+                page,
+                resumen["mensaje"],
+                chat_destino,
+            )
         except Exception as error:
-            _registrar_error(clave_envio, fecha, horario)
+            _registrar_error(clave_envio, fecha, horario, chat_destino)
             print(f"[VENTAS] Error de envío: {error}")
             print("[VENTAS] Regresando al monitor de comprobantes")
             return
@@ -212,6 +243,7 @@ def _procesar_horario(page, horario, fecha, tick, clave):
                 clave_envio,
                 fecha,
                 horario,
+                chat_destino,
                 "ENVIO_AMBIGUO",
             )
             _estados_finales.add(clave)
@@ -224,7 +256,13 @@ def _procesar_horario(page, horario, fecha, tick, clave):
 
         try:
             estado = "ENVIADO" if enviado is True else "ERROR"
-            _registrar_estado(clave_envio, fecha, horario, estado)
+            _registrar_estado(
+                clave_envio,
+                fecha,
+                horario,
+                chat_destino,
+                estado,
+            )
             if enviado is True:
                 print("[VENTAS] Resumen enviado y verificado")
                 print("[VENTAS] Estado ENVIADO guardado localmente")
@@ -238,7 +276,7 @@ def _procesar_horario(page, horario, fecha, tick, clave):
             print("[VENTAS] Regresando al monitor de comprobantes")
     except Exception as error:
         if clave_envio is not None and not envio_iniciado:
-            _registrar_error(clave_envio, fecha, horario)
+            _registrar_error(clave_envio, fecha, horario, chat_destino)
         if tick - _ultimo_log_error >= 60:
             print(f"[VENTAS] Error del resumen programado: {error}")
             _ultimo_log_error = tick
@@ -246,16 +284,25 @@ def _procesar_horario(page, horario, fecha, tick, clave):
 
 
 def verificar_resumen_programado(page):
+    global _ultimo_log_error
     ahora = datetime.now()
     tick = monotonic.monotonic()
 
-    for horario in HORARIOS_RESUMEN:
+    try:
+        chat_destino, horarios_envio = _configuracion_operativa_efectiva()
+    except (app_config.ConfigurationError, OSError, ValueError) as error:
+        if tick - _ultimo_log_error >= 60:
+            print(f"[VENTAS] No se pudo validar la configuración operativa: {error}")
+            _ultimo_log_error = tick
+        return
+
+    for horario in horarios_envio:
         inicio = datetime.combine(ahora.date(), horario)
         fin = inicio + timedelta(minutes=VENTANA_ENVIO_MINUTOS)
         if not inicio <= ahora < fin:
             continue
 
-        clave = (ahora.date(), CHAT_DESTINO, horario)
+        clave = (ahora.date(), chat_destino, horario)
         if clave in _estados_finales:
             continue
 
@@ -264,4 +311,11 @@ def verificar_resumen_programado(page):
             continue
         _ultima_comprobacion_por_horario[horario] = tick
 
-        _procesar_horario(page, horario, ahora.date(), tick, clave)
+        _procesar_horario(
+            page,
+            horario,
+            ahora.date(),
+            tick,
+            clave,
+            chat_destino,
+        )

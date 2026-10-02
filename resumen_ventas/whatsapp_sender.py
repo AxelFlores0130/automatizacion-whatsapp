@@ -1,7 +1,12 @@
 import re
 import time
+import math
 
-from .settings import CHAT_DESTINO
+_HORA_WHATSAPP = re.compile(
+    r"(?:0?[1-9]|1[0-2]):[0-5]\d(?:\s*(?:a\.\s*m\.|p\.\s*m\.|am|pm))?"
+    r"|(?:[01]?\d|2[0-3]):[0-5]\d",
+    re.IGNORECASE,
+)
 
 
 def _es_visible(elemento):
@@ -20,7 +25,7 @@ def _encontrar_visible(page, locators, timeout=10):
     raise RuntimeError("No se encontró el control visible requerido en WhatsApp Web.")
 
 
-def _buscar_filas_exactas(lista_chats):
+def _buscar_filas_exactas(lista_chats, chat_destino):
     titulos = lista_chats.locator('[data-testid="cell-frame-title"]')
     filas = []
     identificadores = set()
@@ -30,11 +35,11 @@ def _buscar_filas_exactas(lista_chats):
             continue
 
         nombre_exacto = titulo.locator(
-            f'span[title="{CHAT_DESTINO}"]'
+            f'span[title="{chat_destino}"]'
         ).count() > 0
         if not nombre_exacto:
             texto = re.sub(r"\s+", " ", titulo.inner_text(timeout=1000)).strip()
-            nombre_exacto = texto == CHAT_DESTINO
+            nombre_exacto = texto == chat_destino
         if not nombre_exacto:
             continue
 
@@ -84,32 +89,6 @@ def _ids_mensajes_visibles(page):
     return ids_visibles
 
 
-def _capturar_mensajes_con_id_dom(page):
-    conversacion = page.locator(
-        '[data-testid="conversation-panel-messages"]'
-    )
-    mensajes = conversacion.locator('[data-testid^="conv-msg-"]')
-    encontrados = {}
-    for indice in range(mensajes.count()):
-        mensaje = mensajes.nth(indice)
-        try:
-            if not mensaje.is_visible():
-                continue
-            identificador = mensaje.get_attribute("data-testid", timeout=500)
-            if identificador:
-                encontrados[identificador] = mensaje
-        except Exception:
-            continue
-    return encontrados
-
-
-def _texto_normalizado(elemento):
-    try:
-        return re.sub(r"\s+", " ", elemento.inner_text(timeout=500)).strip()
-    except Exception:
-        return ""
-
-
 def _canonicalizar_texto_whatsapp(texto):
     texto = texto.replace("\r\n", "\n").replace("\r", "\n")
     texto = re.sub(
@@ -118,71 +97,147 @@ def _canonicalizar_texto_whatsapp(texto):
         texto,
         flags=re.MULTILINE,
     )
-    return tuple(
-        linea
-        for linea in (
-            re.sub(r"\s+", " ", linea).strip()
-            for linea in texto.split("\n")
-        )
-        if linea
+    emojis_iniciales = re.compile(r"^(?:📊|📅|🕐|💵|💳|📦|🧾|💰|🏬)\ufe0f?\s*")
+    lineas = []
+    for linea in texto.split("\n"):
+        linea = re.sub(r"\s+", " ", linea).strip()
+        linea = emojis_iniciales.sub("", linea)
+        if linea:
+            lineas.append(linea)
+    return tuple(lineas)
+
+
+def _textos_equivalentes(texto_esperado, texto_renderizado):
+    if texto_renderizado == texto_esperado:
+        return True
+    if len(texto_renderizado) != len(texto_esperado) + 1:
+        return False
+    return (
+        _HORA_WHATSAPP.fullmatch(texto_renderizado[-1]) is not None
+        and texto_renderizado[:-1] == texto_esperado
     )
 
 
-def _diagnosticar_post_envio(
+def _expandir_leer_mas_si_es_necesario(
+    candidato,
+    contenedor,
+    identificador,
+    texto_esperado,
+    texto_renderizado,
     page,
-    editor,
-    ids_antes,
-    ids_reportados,
-    firma_anterior,
-    editor_vacio_anterior,
+    expansiones_intentadas,
 ):
-    mensajes_actuales = _capturar_mensajes_con_id_dom(page)
-    ids_actuales = set(mensajes_actuales)
-    ids_nuevos = ids_actuales - ids_antes
-    firma = (tuple(sorted(ids_actuales)), tuple(sorted(ids_nuevos)))
+    if _textos_equivalentes(texto_esperado, texto_renderizado):
+        return texto_renderizado, True
+    if not any("Leer más" in linea for linea in texto_renderizado):
+        return texto_renderizado, False
 
-    if firma != firma_anterior:
-        pass
-
-    for identificador in sorted(ids_nuevos - ids_reportados):
-        mensaje = mensajes_actuales[identificador]
-        try:
-            visible = mensaje.is_visible()
-            tail_out = mensaje.locator('[data-testid="tail-out"]').count() > 0
-            contenedor = mensaje.locator('[data-testid="msg-container"]')
-            tiene_msg_container = contenedor.count() > 0
-            tail_out_en_contenedor = (
-                tiene_msg_container
-                and contenedor.locator('[data-testid="tail-out"]').count() > 0
-            )
-            data_testids = mensaje.locator("[data-testid]")
-            valores_data_testid = []
-            for indice in range(data_testids.count()):
-                valor = data_testids.nth(indice).get_attribute(
-                    "data-testid",
-                    timeout=500,
-                )
-                if valor:
-                    valores_data_testid.append(valor)
-            if not tiene_msg_container:
-                contenedor = mensaje
-            texto = _texto_normalizado(contenedor)
-        except Exception:
-            visible = False
-            tail_out = False
-            tiene_msg_container = False
-            tail_out_en_contenedor = False
-            valores_data_testid = []
-            texto = ""
-        ids_reportados.add(identificador)
+    if identificador in expansiones_intentadas:
+        return texto_renderizado, False
+    expansiones_intentadas.add(identificador)
 
     try:
-        editor_vacio = not editor.inner_text(timeout=500).strip()
+        controles = candidato.get_by_text("Leer más", exact=True)
+        if controles.count() != 1:
+            return texto_renderizado, False
+        control = controles.nth(0)
+        if not control.is_visible():
+            return texto_renderizado, False
+        control.click(timeout=1000)
     except Exception:
-        editor_vacio = False
-    if editor_vacio != editor_vacio_anterior:
-        pass
-    return firma, editor_vacio
+        return texto_renderizado, False
+
+    page.wait_for_timeout(200)
+    try:
+        texto_expandido = _canonicalizar_texto_whatsapp(
+            contenedor.inner_text(timeout=1000)
+        )
+    except Exception:
+        return (), False
+
+    return texto_expandido, (
+        bool(texto_esperado)
+        and _textos_equivalentes(texto_esperado, texto_expandido)
+    )
+
+
+def _alineacion_derecha_segura(rect_contenedor, rect_panel):
+    if not isinstance(rect_contenedor, dict) or not isinstance(rect_panel, dict):
+        return False
+
+    def valores_rectangulo(rectangulo):
+        valores = tuple(rectangulo.get(nombre) for nombre in ("left", "right", "width"))
+        if any(
+            isinstance(valor, bool)
+            or not isinstance(valor, (int, float))
+            or not math.isfinite(valor)
+            for valor in valores
+        ):
+            return None
+        left, right, width = valores
+        if width <= 0 or right <= left:
+            return None
+        if not math.isclose(width, right - left, abs_tol=1, rel_tol=0):
+            return None
+        return left, right, width
+
+    contenedor = valores_rectangulo(rect_contenedor)
+    panel = valores_rectangulo(rect_panel)
+    if contenedor is None or panel is None:
+        return False
+
+    contenedor_left, contenedor_right, _ = contenedor
+    panel_left, panel_right, _ = panel
+    if contenedor_left < panel_left or contenedor_right > panel_right:
+        return False
+
+    distancia_izquierda = contenedor_left - panel_left
+    distancia_derecha = panel_right - contenedor_right
+    return (
+        distancia_derecha < distancia_izquierda
+        and distancia_izquierda - distancia_derecha > 8
+    )
+
+
+def _determinar_direccion_saliente(
+    tail_out,
+    rect_contenedor=None,
+    rect_panel=None,
+):
+    if tail_out:
+        return True
+    return _alineacion_derecha_segura(rect_contenedor, rect_panel)
+
+
+def _es_saliente(candidato, page):
+    tail_out = candidato.locator('[data-testid="tail-out"]').count() > 0
+    if tail_out:
+        return _determinar_direccion_saliente(tail_out)
+
+    contenedor = candidato.locator('[data-testid="msg-container"]')
+    panel = page.locator('[data-testid="conversation-panel-messages"]')
+    if contenedor.count() == 0 or panel.count() == 0:
+        return False
+    try:
+        rect_contenedor = contenedor.evaluate(
+            """elemento => {
+                const rect = elemento.getBoundingClientRect();
+                return {left: rect.left, right: rect.right, width: rect.width};
+            }"""
+        )
+        rect_panel = panel.evaluate(
+            """elemento => {
+                const rect = elemento.getBoundingClientRect();
+                return {left: rect.left, right: rect.right, width: rect.width};
+            }"""
+        )
+    except Exception:
+        return False
+    return _determinar_direccion_saliente(
+        False,
+        rect_contenedor,
+        rect_panel,
+    )
 
 
 def _campo_busqueda_vacio(campo_busqueda):
@@ -258,146 +313,30 @@ def _restaurar_busqueda(page, campo_busqueda, lista_chats):
     return False
 
 
-def _registrar_diagnostico_candidato(
-    diagnostico,
-    identificador,
-    visible,
-    saliente,
-    tiene_contenedor,
-    editor_vacio,
-    texto_equivalente,
-    texto_esperado,
-    texto_renderizado,
+def _hay_nuevo_saliente(
+    page,
+    ids_antes,
+    mensaje,
+    editor,
+    expansiones_intentadas,
 ):
-    diagnostico["candidatos_nuevos"].add(identificador)
-    if saliente:
-        diagnostico["salientes_nuevos"].add(identificador)
-    if texto_equivalente:
-        diagnostico["texto_coincidente"].add(identificador)
-    if editor_vacio:
-        diagnostico["editor_vacio"].add(identificador)
-
-    firma = (
-        visible,
-        saliente,
-        tiene_contenedor,
-        editor_vacio,
-        texto_equivalente,
-        texto_renderizado,
-    )
-    if diagnostico["firmas_candidatos"].get(identificador) == firma:
-        return
-    diagnostico["firmas_candidatos"][identificador] = firma
-
-    print("[VENTAS][DEBUG CANDIDATO]")
-    print(f"data-testid={identificador}")
-    print(f"visible={'sí' if visible else 'no'}")
-    print(f"tail-out={'sí' if saliente else 'no'}")
-    print(f"msg-container={'sí' if tiene_contenedor else 'no'}")
-    print(f"editor_vacio={'sí' if editor_vacio else 'no'}")
-    print(f"texto_coincide={'sí' if texto_equivalente else 'no'}")
-    if not texto_equivalente:
-        print(f"texto_esperado={texto_esperado!r}")
-        if saliente and texto_renderizado is not None:
-            print(f"texto_renderizado={texto_renderizado!r}")
-        else:
-            print("texto_renderizado=<omitido: mensaje no saliente>")
-
-
-def _imprimir_resumen_diagnostico_confirmacion(diagnostico):
-    print("[VENTAS][DEBUG CONFIRMACION]")
-    print(f"mensajes_totales={diagnostico['mensajes_totales']}")
-    print(f"candidatos_nuevos={len(diagnostico['candidatos_nuevos'])}")
-    print(f"salientes_nuevos={len(diagnostico['salientes_nuevos'])}")
-    print(f"texto_coincidente={len(diagnostico['texto_coincidente'])}")
-    print(f"editor_vacio={len(diagnostico['editor_vacio'])}")
-
-
-def _hay_nuevo_saliente(page, ids_antes, mensaje, editor, diagnostico=None):
     mensajes = page.locator(
         '[data-testid="conversation-panel-messages"] '
         '[data-testid^="conv-msg-"]'
     )
     texto_esperado = _canonicalizar_texto_whatsapp(mensaje)
     cantidad_mensajes = mensajes.count()
-    if diagnostico is not None:
-        diagnostico["mensajes_totales"] = cantidad_mensajes
 
     for indice in range(cantidad_mensajes):
         candidato = mensajes.nth(indice)
         visible = candidato.is_visible()
-        if not visible:
-            if diagnostico is not None:
-                try:
-                    identificador = candidato.get_attribute(
-                        "data-testid",
-                        timeout=1000,
-                    )
-                    if identificador and identificador not in ids_antes:
-                        saliente = (
-                            candidato.locator(
-                                '[data-testid="tail-out"]'
-                            ).count()
-                            > 0
-                        )
-                        tiene_contenedor = (
-                            candidato.locator(
-                                '[data-testid="msg-container"]'
-                            ).count()
-                            > 0
-                        )
-                        try:
-                            editor_vacio = (
-                                not editor.inner_text(timeout=1000).strip()
-                            )
-                        except Exception:
-                            editor_vacio = False
-                        _registrar_diagnostico_candidato(
-                            diagnostico,
-                            identificador,
-                            False,
-                            saliente,
-                            tiene_contenedor,
-                            editor_vacio,
-                            False,
-                            texto_esperado,
-                            None,
-                        )
-                except Exception:
-                    pass
-            continue
-
         identificador = candidato.get_attribute("data-testid", timeout=1000)
         if not identificador or identificador in ids_antes:
             continue
 
-        saliente = candidato.locator('[data-testid="tail-out"]').count() > 0
-        if not saliente:
-            if diagnostico is not None:
-                try:
-                    tiene_contenedor = (
-                        candidato.locator(
-                            '[data-testid="msg-container"]'
-                        ).count()
-                        > 0
-                    )
-                    editor_vacio = (
-                        not editor.inner_text(timeout=1000).strip()
-                    )
-                except Exception:
-                    tiene_contenedor = False
-                    editor_vacio = False
-                _registrar_diagnostico_candidato(
-                    diagnostico,
-                    identificador,
-                    True,
-                    False,
-                    tiene_contenedor,
-                    editor_vacio,
-                    False,
-                    texto_esperado,
-                    None,
-                )
+        if not visible:
+            continue
+        if not _es_saliente(candidato, page):
             continue
 
         contenedor = candidato.locator('[data-testid="msg-container"]')
@@ -406,46 +345,28 @@ def _hay_nuevo_saliente(page, ids_antes, mensaje, editor, diagnostico=None):
             contenedor = candidato
         contenedor_visible = contenedor.is_visible()
         if not contenedor_visible:
-            if diagnostico is not None:
-                try:
-                    editor_vacio = (
-                        not editor.inner_text(timeout=1000).strip()
-                    )
-                except Exception:
-                    editor_vacio = False
-                _registrar_diagnostico_candidato(
-                    diagnostico,
-                    identificador,
-                    True,
-                    True,
-                    tiene_contenedor,
-                    editor_vacio,
-                    False,
-                    texto_esperado,
-                    None,
-                )
             continue
 
         texto_renderizado = _canonicalizar_texto_whatsapp(
             contenedor.inner_text(timeout=1000)
         )
-        texto_equivalente = (
-            bool(texto_esperado)
-            and texto_renderizado == texto_esperado
+        texto_equivalente = bool(texto_esperado) and _textos_equivalentes(
+            texto_esperado,
+            texto_renderizado,
         )
-        editor_vacio = not editor.inner_text(timeout=1000).strip()
-        if diagnostico is not None:
-            _registrar_diagnostico_candidato(
-                diagnostico,
-                identificador,
-                True,
-                True,
-                tiene_contenedor,
-                editor_vacio,
-                texto_equivalente,
-                texto_esperado,
-                texto_renderizado,
+        if not texto_equivalente:
+            texto_renderizado, texto_equivalente = (
+                _expandir_leer_mas_si_es_necesario(
+                    candidato,
+                    contenedor,
+                    identificador,
+                    texto_esperado,
+                    texto_renderizado,
+                    page,
+                    expansiones_intentadas,
+                )
             )
+        editor_vacio = not editor.inner_text(timeout=1000).strip()
         if texto_equivalente and editor_vacio:
             print(
                 "[VENTAS] Envío confirmado por nuevo mensaje saliente, "
@@ -501,7 +422,7 @@ def _identificar_boton_enviar(footer):
     return candidatos[0]
 
 
-def enviar_resumen_whatsapp(page, mensaje):
+def enviar_resumen_whatsapp(page, mensaje, chat_destino):
     campo_busqueda = None
     lista_chats = page.locator('[data-testid="chat-list"]')
     click_intentado = False
@@ -524,33 +445,33 @@ def enviar_resumen_whatsapp(page, mensaje):
             ),
         )
         campo_busqueda.fill("")
-        campo_busqueda.fill(CHAT_DESTINO)
+        campo_busqueda.fill(chat_destino)
 
         limite = time.monotonic() + 15
         filas = []
         while time.monotonic() < limite:
-            filas = _buscar_filas_exactas(lista_chats)
+            filas = _buscar_filas_exactas(lista_chats, chat_destino)
             if filas:
                 page.wait_for_timeout(400)
-                filas = _buscar_filas_exactas(lista_chats)
+                filas = _buscar_filas_exactas(lista_chats, chat_destino)
                 break
             page.wait_for_timeout(250)
 
         if len(filas) != 1:
             raise RuntimeError(
                 "No se encontró un único chat exacto llamado "
-                f"'{CHAT_DESTINO}'."
+                f"'{chat_destino}'."
             )
-        filas = _buscar_filas_exactas(lista_chats)
+        filas = _buscar_filas_exactas(lista_chats, chat_destino)
         if len(filas) != 1:
             raise RuntimeError(
                 "El chat dejó de ser único antes de abrir "
-                f"'{CHAT_DESTINO}'."
+                f"'{chat_destino}'."
             )
-        print(f"[VENTAS] Abriendo chat: {CHAT_DESTINO}")
+        print(f"[VENTAS] Abriendo chat: {chat_destino}")
         filas[0].click(timeout=5000)
         titulos_chat = page.locator("header").get_by_text(
-            CHAT_DESTINO,
+            chat_destino,
             exact=True,
         )
         limite = time.monotonic() + 10
@@ -603,7 +524,7 @@ def enviar_resumen_whatsapp(page, mensaje):
             raise RuntimeError("El botón Enviar no está habilitado.")
 
         titulos_chat = page.locator("header").get_by_text(
-            CHAT_DESTINO,
+            chat_destino,
             exact=True,
         )
         if not any(
@@ -613,44 +534,21 @@ def enviar_resumen_whatsapp(page, mensaje):
             raise RuntimeError("El chat abierto dejó de coincidir con el destino.")
 
         ids_mensajes_antes = _ids_mensajes_visibles(page)
-        ids_dom_antes = set(_capturar_mensajes_con_id_dom(page))
         click_intentado = True
         boton.click(timeout=3000)
         page.wait_for_timeout(2000)
         limite = time.monotonic() + 12
-        diagnostico_confirmacion = {
-            "mensajes_totales": 0,
-            "candidatos_nuevos": set(),
-            "salientes_nuevos": set(),
-            "texto_coincidente": set(),
-            "editor_vacio": set(),
-            "firmas_candidatos": {},
-        }
-        ids_reportados = set()
-        firma_anterior = None
-        editor_vacio_anterior = None
+        expansiones_intentadas = set()
         while time.monotonic() < limite:
-            firma_anterior, editor_vacio_anterior = _diagnosticar_post_envio(
-                page,
-                editor,
-                ids_dom_antes,
-                ids_reportados,
-                firma_anterior,
-                editor_vacio_anterior,
-            )
             if _hay_nuevo_saliente(
                 page,
                 ids_mensajes_antes,
                 mensaje,
                 editor,
-                diagnostico_confirmacion,
+                expansiones_intentadas,
             ):
-                _imprimir_resumen_diagnostico_confirmacion(
-                    diagnostico_confirmacion
-                )
                 return True
             page.wait_for_timeout(300)
-        _imprimir_resumen_diagnostico_confirmacion(diagnostico_confirmacion)
         return None
     except Exception:
         if click_intentado:

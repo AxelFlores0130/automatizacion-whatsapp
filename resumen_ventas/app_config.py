@@ -2,14 +2,48 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from datetime import time
+
+from .settings import CHAT_DESTINO, HORARIOS_RESUMEN
 
 
 CONFIG_FILENAME = "ventas_config.json"
 CONFIG_DIRECTORY = "DorianMuebles"
+DEFAULT_CHAT_DESTINO = CHAT_DESTINO
+DEFAULT_HORARIOS_ENVIO = tuple(
+    horario.strftime("%H:%M") for horario in HORARIOS_RESUMEN
+)
 
 
 class ConfigurationError(ValueError):
     pass
+
+
+def validate_horarios_envio(horarios):
+    if not isinstance(horarios, (list, tuple)) or not horarios:
+        raise ConfigurationError("Debe configurarse al menos un horario de envío.")
+
+    normalizados = []
+    for horario in horarios:
+        if not isinstance(horario, str):
+            raise ConfigurationError("Cada horario debe tener formato HH:MM.")
+        partes = horario.strip().split(":")
+        if len(partes) != 2 or not all(parte.isdecimal() for parte in partes):
+            raise ConfigurationError("Cada horario debe tener formato HH:MM.")
+        hora, minuto = (int(parte) for parte in partes)
+        if not 0 <= hora <= 23:
+            raise ConfigurationError("La hora debe estar entre 00 y 23.")
+        if not 0 <= minuto <= 59:
+            raise ConfigurationError("Los minutos deben estar entre 00 y 59.")
+
+        normalizado = time(hora, minuto).strftime("%H:%M")
+        if normalizado in normalizados:
+            raise ConfigurationError(
+                f"El horario {normalizado} está duplicado."
+            )
+        normalizados.append(normalizado)
+
+    return sorted(normalizados)
 
 
 def config_path():
@@ -46,6 +80,12 @@ def validate_connection_config(config):
             raise ConfigurationError(f"El campo {field} no es válido.")
 
     password = _read_password(config)
+    chat_destino = config.get("chat_destino", DEFAULT_CHAT_DESTINO)
+    if not isinstance(chat_destino, str) or not chat_destino.strip():
+        raise ConfigurationError(
+            "El chat o grupo de WhatsApp es obligatorio."
+        )
+    chat_destino = chat_destino.strip()
     port_value = config.get("port")
     if (
         isinstance(port_value, bool)
@@ -69,6 +109,7 @@ def validate_connection_config(config):
         "password": password,
         "central_database": config["central_database"],
         "dorian_database": config["dorian_database"],
+        "chat_destino": chat_destino,
     }
 
 
@@ -91,7 +132,11 @@ def load_config():
         config["central_database"] = config["database_central"]
     if "dorian_database" not in config and "database_dorian" in config:
         config["dorian_database"] = config["database_dorian"]
-    return validate_connection_config(config)
+    validated = validate_connection_config(config)
+    validated["horarios_envio"] = validate_horarios_envio(
+        config.get("horarios_envio", DEFAULT_HORARIOS_ENVIO)
+    )
+    return validated
 
 
 def get_connection_config():
@@ -103,6 +148,10 @@ def get_connection_config():
 
 def save_config(config):
     validated = validate_connection_config(config)
+    horarios_envio = validate_horarios_envio(
+        config.get("horarios_envio", DEFAULT_HORARIOS_ENVIO)
+    )
+    validated["horarios_envio"] = horarios_envio
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -112,6 +161,8 @@ def save_config(config):
         "user": validated["user"],
         "central_database": validated["central_database"],
         "dorian_database": validated["dorian_database"],
+        "chat_destino": validated["chat_destino"],
+        "horarios_envio": horarios_envio,
     }
     _write_password(payload, validated["password"])
 

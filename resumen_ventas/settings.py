@@ -1,10 +1,11 @@
-from datetime import time
+﻿from datetime import time
 
 
 CHAT_DESTINO = "Trabajos"
+FECHA_PRUEBA_VENTAS = None
 HORARIOS_RESUMEN = [
-	time(12, 3),
-	time(12, 9),
+	time(12, 0),
+	time(17, 0),
 ]
 VENTANA_ENVIO_MINUTOS = 5
 INTERVALO_REINTENTO_SEGUNDOS = 60
